@@ -1,0 +1,330 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Design tokens. Every color in the app comes from here, so light and dark stay in step. */
+:root {
+  --background: #fafafa;
+  --foreground: #18181b;
+  --card: #ffffff;
+  --card-foreground: #18181b;
+  --sidebar: #f4f4f5;
+  --muted: #f0f0f2;
+  --muted-foreground: #62626b;
+  --border: #e4e4e7;
+  --input: #d4d4d8;
+  --primary: #5f3fd6;
+  --primary-hover: #5233c2;
+  --primary-foreground: #ffffff;
+  --accent: #ece7fd;
+  --accent-foreground: #3a2699;
+  --destructive: #c62828;
+  --success: #15803d;
+  --warning: #a16207;
+  --ring: #7c5cf0;
+  --code-bg: #f1f1f4;
+  --selection: rgba(124, 92, 240, 0.22);
+  --shadow-pop: 0 10px 38px -10px rgba(24, 24, 27, 0.25), 0 4px 12px -6px rgba(24, 24, 27, 0.12);
+  color-scheme: light;
+}
+
+.dark {
+  --background: #09090b;
+  --foreground: #e4e4e7;
+  --card: #101013;
+  --card-foreground: #e4e4e7;
+  --sidebar: #0c0c0f;
+  --muted: #18181b;
+  --muted-foreground: #a1a1aa;
+  --border: #25252b;
+  --input: #34343c;
+  --primary: #8b6cf6;
+  --primary-hover: #9d83f8;
+  --primary-foreground: #0b0618;
+  --accent: rgba(139, 108, 246, 0.14);
+  --accent-foreground: #ddd6fe;
+  --destructive: #f87171;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --ring: #8b6cf6;
+  --code-bg: #17171b;
+  --selection: rgba(139, 108, 246, 0.35);
+  --shadow-pop: 0 14px 44px -12px rgba(0, 0, 0, 0.7), 0 4px 14px -6px rgba(0, 0, 0, 0.5);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-ring: var(--ring);
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  --shadow-pop: var(--shadow-pop);
+  --animate-fade-in: fade-in 160ms ease-out;
+  --animate-pop-in: pop-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-slide-in: slide-in 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px) scale(0.98);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes slide-in {
+    from {
+      transform: translateX(-12px);
+      opacity: 0;
+    }
+    to {
+      transform: none;
+      opacity: 1;
+    }
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+  body {
+    margin: 0;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-feature-settings: 'cv11', 'ss01';
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  button,
+  input,
+  textarea {
+    font: inherit;
+  }
+  button {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  ::selection {
+    background: var(--selection);
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--input) transparent;
+  }
+}
+
+/* ---- Rendered Markdown --------------------------------------------------- */
+.markdown-preview {
+  color: var(--foreground);
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+  font-size: 1rem;
+}
+.markdown-preview > :first-child {
+  margin-top: 0;
+}
+.markdown-preview > :last-child {
+  margin-bottom: 0;
+}
+.markdown-preview h1,
+.markdown-preview h2,
+.markdown-preview h3,
+.markdown-preview h4 {
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
+.markdown-preview h1 {
+  margin: 1.6em 0 0.6em;
+  font-size: 1.9rem;
+}
+.markdown-preview h2 {
+  margin: 1.5em 0 0.55em;
+  font-size: 1.5rem;
+}
+.markdown-preview h3 {
+  margin: 1.3em 0 0.5em;
+  font-size: 1.2rem;
+}
+.markdown-preview h4 {
+  margin: 1.2em 0 0.4em;
+  font-size: 1.05rem;
+}
+.markdown-preview p {
+  margin: 0 0 1.1em;
+}
+.markdown-preview a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--primary) 45%, transparent);
+  text-underline-offset: 3px;
+}
+.markdown-preview a:hover {
+  text-decoration-color: currentColor;
+}
+.markdown-preview ul {
+  margin: 0 0 1.1em;
+  list-style: disc;
+  padding-left: 1.5em;
+}
+.markdown-preview ol {
+  margin: 0 0 1.1em;
+  list-style: decimal;
+  padding-left: 1.5em;
+}
+.markdown-preview li {
+  margin: 0.25em 0;
+  padding-left: 0.2em;
+}
+.markdown-preview li > ul,
+.markdown-preview li > ol {
+  margin: 0.25em 0 0;
+}
+.markdown-preview li:has(> input[type='checkbox']) {
+  list-style: none;
+  margin-left: -1.3em;
+}
+.markdown-preview input[type='checkbox'] {
+  margin-right: 0.5em;
+  accent-color: var(--primary);
+}
+.markdown-preview blockquote {
+  margin: 1.2em 0;
+  border-left: 3px solid var(--primary);
+  padding-left: 1em;
+  color: var(--muted-foreground);
+}
+.markdown-preview code {
+  border-radius: 0.35rem;
+  background: var(--code-bg);
+  padding: 0.15em 0.35em;
+  font-family: var(--font-mono);
+  font-size: 0.87em;
+}
+.markdown-preview pre {
+  overflow-x: auto;
+  margin: 1.2em 0;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--code-bg);
+  padding: 1rem;
+  line-height: 1.6;
+}
+.markdown-preview pre code {
+  background: transparent;
+  padding: 0;
+}
+.markdown-preview hr {
+  margin: 1.75em 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.markdown-preview img {
+  max-width: 100%;
+  border-radius: 0.5rem;
+}
+.markdown-preview table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 1.2em 0;
+}
+.markdown-preview th,
+.markdown-preview td {
+  border: 1px solid var(--border);
+  padding: 0.5em 0.75em;
+  text-align: left;
+}
+.markdown-preview th {
+  background: var(--muted);
+  font-weight: 600;
+}
+
+/* ---- CodeMirror host ------------------------------------------------------ */
+.note-editor .cm-editor {
+  background: transparent;
+  color: var(--foreground);
+}
+.note-editor .cm-editor.cm-focused {
+  outline: none;
+}
+.note-editor .cm-scroller {
+  font-family: inherit;
+  line-height: 1.85;
+}
+.note-editor.editor-mono .cm-scroller {
+  font-family: var(--font-mono);
+  line-height: 1.75;
+  font-size: 0.9rem;
+}
+.note-editor .cm-content {
+  padding: 0 0 4rem;
+  caret-color: var(--primary);
+}
+.note-editor .cm-line {
+  padding: 0;
+}
+.note-editor .cm-placeholder {
+  color: var(--muted-foreground);
+  opacity: 0.7;
+}
+.note-editor .cm-selectionBackground,
+.note-editor .cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground {
+  background: var(--selection) !important;
+}
+.note-editor .cm-cursor {
+  border-left-color: var(--primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
