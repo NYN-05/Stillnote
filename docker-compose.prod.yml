@@ -1,0 +1,74 @@
+# Production-style stack: nginx (static client + /api proxy) -> api -> postgres/redis.
+#   cp .env.production.example .env.production   # then set the secrets
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --scale api=3
+# Only the web port is published. Put a TLS-terminating proxy or load balancer in front of it.
+name: stillnote-prod
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: stillnote
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+      POSTGRES_DB: stillnote
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U stillnote -d stillnote']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Only rate-limit counters live here, so no persistence is needed.
+    command: ['redis-server', '--save', '', '--appendonly', 'no', '--maxmemory', '128mb', '--maxmemory-policy', 'allkeys-lru']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: ${STILLNOTE_API_IMAGE:-stillnote-api:local}
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      NODE_ENV: production
+      PORT: '4000'
+      DATABASE_URL: postgres://stillnote:${POSTGRES_PASSWORD}@postgres:5432/stillnote
+      PG_POOL_MAX: ${PG_POOL_MAX:-20}
+      REDIS_URL: redis://redis:6379
+      TRUST_PROXY: 'true'
+      CLIENT_ORIGINS: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN, e.g. https://notes.example.com}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-1200}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      APP_ENV: ${APP_ENV:-production}
+
+  web:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    image: ${STILLNOTE_WEB_IMAGE:-stillnote-web:local}
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      API_UPSTREAM: api:4000
+    ports:
+      - '${WEB_PORT:-8080}:80'
+
+volumes:
+  pgdata:
