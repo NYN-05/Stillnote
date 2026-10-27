@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Lint, types, unit and API tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: stillnote
+          POSTGRES_PASSWORD: stillnote
+          POSTGRES_DB: stillnote
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U stillnote -d stillnote"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgres://stillnote:stillnote@localhost:5432/stillnote
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run typecheck
+      - name: API tests (real PostgreSQL)
+        run: npm test
+      - name: Client tests (sync engine)
+        run: npm run test:client
+      - run: npm run build
+
+  e2e:
+    name: Browser and load tests against the production stack
+    runs-on: ubuntu-latest
+    needs: verify
+    timeout-minutes: 25
+    env:
+      COMPOSE: docker compose -f docker-compose.prod.yml --env-file .env.ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Configure the stack
+        run: |
+          {
+            echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
+            echo "PUBLIC_ORIGIN=http://localhost:8080"
+            echo "WEB_PORT=8080"
+            echo "COOKIE_SECURE=true"
+          } > .env.ci
+      - name: Build and start (nginx + 2 api replicas + postgres + redis)
+        run: $COMPOSE up -d --build --scale api=2 --wait --wait-timeout 180
+      - run: npx playwright install --with-deps chromium
+      - name: Run browser tests
+        run: E2E_BASE_URL=http://localhost:8080 npm run e2e
+      - uses: grafana/setup-k6-action@v1
+      - name: Load test gate (100 and 300 req/s on seeded data)
+        run: |
+          COMPOSE_FILE=docker-compose.prod.yml ENV_FILE=.env.ci loadtest/seed.sh 500 20
+          npm run loadtest -- --rates 100,300 --duration 30s --base-url http://localhost:8080
+      - name: Stack logs on failure
+        if: failure()
+        run: $COMPOSE logs --no-color --tail 200
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+          retention-days: 7
+      - name: Tear down
+        if: always()
+        run: $COMPOSE down -v
+
+  images:
+    name: Publish images
+    runs-on: ubuntu-latest
+    needs: [verify, e2e]
+    # Only from main and version tags, never from pull requests.
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - name: stillnote-api
+            file: server/Dockerfile
+          - name: stillnote-web
+            file: client/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
