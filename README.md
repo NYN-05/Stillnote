@@ -1,205 +1,435 @@
-# Stillnote
+<div align="center">
 
-A quiet, Markdown-first note-taking app. Notes are saved on your device instantly, synced to a server in the background, and stay usable offline.
+# 📝 Stillnote
 
-- **Frontend:** React 18, TypeScript, Vite, Tailwind CSS 4, Radix UI primitives, CodeMirror 6, TanStack Query, Zustand, React Router, installable as a PWA.
-- **Backend:** Node 22, Fastify 5, PostgreSQL 16, Redis 7 (optional, for shared rate limits), argon2 password hashing.
-- **Ops:** Docker images, nginx, Prometheus metrics, JSON logs, optional Sentry, backup/restore scripts, GitHub Actions CI.
+**A quiet, Markdown-first notes app that saves on your device first, syncs when it can, and never gets in your way.**
 
-## Contents
+[![CI](https://github.com/NYN-05/Stillnote/actions/workflows/ci.yml/badge.svg)](https://github.com/NYN-05/Stillnote/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/status-active-brightgreen.svg)](#-known-limits)
+[![Node](https://img.shields.io/badge/node-%E2%89%A5%2020-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev)
+[![Fastify](https://img.shields.io/badge/Fastify-5-000000?logo=fastify&logoColor=white)](https://fastify.dev)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org)
+[![PWA](https://img.shields.io/badge/PWA-installable-5A0FC8?logo=pwa&logoColor=white)](#-key-features)
 
-[Quick start](#quick-start) · [Architecture](#architecture) · [Scripts](#scripts) · [Configuration](#configuration) · [Deploying](#deploying-with-docker) · [Operations](#operations) · [Testing and CI](#testing-and-ci) · [API](#api) · [Security](#security-notes) · [Limits](#known-limits)
+<br />
 
-## Quick start
+<img src="docs/screenshots/editor-split-light.png" alt="Stillnote editor in split view: Markdown on the left, rendered preview on the right" width="900" />
 
-Requires Node.js 20 or later (22 recommended) and Docker.
+</div>
 
-```bash
-npm install
-npm run db:up        # PostgreSQL on :5432 and Redis on :6379 (docker compose)
-npm run dev          # API on :4000, web on :5173 (Vite proxies /api)
-```
+---
 
-Open <http://localhost:5173> and create an account. Migrations run automatically when the API starts.
+## 📖 Overview
 
-## Architecture
+Most note apps make you choose: fast and local, or synced and online. Stillnote does both. Every keystroke is written to your browser's database immediately, so the editor never waits on a network. A background sync engine uploads changes to the server, reconciles with your other devices, and quietly catches up after you have been offline.
+
+### The problems it solves
+
+| Problem                                                            | How Stillnote handles it                                                                                              |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| Notes apps that stall or lose text when the connection drops       | Edits are saved locally first and uploaded later; offline work is kept and synced on reconnect                        |
+| Silent overwrites when two devices edit the same note              | Every write carries a version. A stale write is rejected, the newer edit wins by timestamp, and you are told          |
+| Slow startup as your library grows                                 | The note list loads without note text; each note is fetched only when opened, so ten notes and ten thousand cost the same |
+| Cluttered editors                                                  | A calm Markdown editor with an optional toolbar, split preview, light and dark themes, and a keyboard-first palette   |
+| Self-hosting that is a weekend project                             | One `docker compose` file gives you nginx, API replicas, PostgreSQL and Redis, with backups, metrics and CI included  |
+
+---
+
+## ✨ Key Features
+
+**Writing**
+
+- ✍️ **Markdown editor** built on CodeMirror 6 with a formatting toolbar and shortcuts (bold, italic, headings, lists, task lists, quotes, links, code)
+- 👀 **Write, Split and Preview modes**, with GitHub-flavoured Markdown (tables, task lists, strikethrough)
+- 🔒 **Safe rendering:** raw HTML and `javascript:` links in a note are never executed (covered by an automated test)
+- 🔤 Optional monospace font, word count, character count and reading time
+
+**Library**
+
+- ⌨️ **Command palette** (`Ctrl/⌘ + K`) to jump to any note or run any action
+- 📌 **Pinning**, instant filtering, and a URL for every note (`/notes/:id`)
+- 📤 Export a note as `.md` or `.txt`, or your whole library as JSON
+
+**Offline-first sync**
+
+- 💾 Full offline copy in IndexedDB, **one database per account**
+- 🔁 Ordered uploads, conflict detection by version, deletes that cannot be resurrected by a late save
+- 🌐 Works as an **installable PWA**; the service worker caches only the app shell, never your data
+
+**Accounts and security**
+
+- 👤 Email and password accounts, argon2id hashing, hashed server-side sessions in an `HttpOnly` cookie
+- 🧱 Every query is scoped to the signed-in user; another user's note is indistinguishable from a missing one
+- 🛡️ Strict Content-Security-Policy, per-account and per-IP rate limits, origin checks
+
+**Operations**
+
+- 📊 Prometheus metrics, JSON logs with request IDs, liveness and readiness endpoints, optional Sentry
+- 🐳 Production Docker images, backup and restore scripts, GitHub Actions CI with browser and load-test gates
+
+<div align="center">
+
+|                                                  Dark theme                                                   |                                              Command palette                                              |                                       Mobile                                       |
+| :-----------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------: | :--------------------------------------------------------------------------------: |
+| <img src="docs/screenshots/editor-dark.png" alt="Editor in the dark theme" width="380" /> | <img src="docs/screenshots/command-palette.png" alt="Command palette searching notes" width="380" /> | <img src="docs/screenshots/mobile-editor.png" alt="Editor on a phone" width="170" /> |
+
+</div>
+
+---
+
+## 🧰 Tech Stack & Architecture
+
+| Layer          | Technology                                                                                                                 |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| **Frontend**   | React 18, TypeScript (strict), Vite 6, Tailwind CSS 4, Radix UI primitives, CodeMirror 6, React Router 7                   |
+| **Client state** | TanStack Query (session), Zustand (UI preferences), a framework-free sync engine with IndexedDB via `idb`               |
+| **Backend**    | Node.js 22, Fastify 5, pino logging, argon2, `@fastify/rate-limit`, `@fastify/helmet`, `@fastify/compress`                 |
+| **Data**       | PostgreSQL 16 (notes, users, sessions) with numbered SQL migrations; Redis 7 (optional, shared rate-limit counters)        |
+| **Delivery**   | Docker, nginx (static files, `/api` proxy, CSP, caching), PWA service worker                                               |
+| **Quality**    | ESLint 9, Prettier, Husky + lint-staged, `node --test` (API), Vitest (sync engine), Playwright + axe (browser), k6 (load) |
+| **Operations** | Prometheus metrics (`prom-client`), optional Sentry, `pg_dump` backup and restore scripts, GitHub Actions, Dependabot      |
+
+### System overview
 
 ```text
-Browser ──► nginx ──► api (Fastify) ×N ──► PostgreSQL   notes, users, sessions
-  │  static files   │  /api/*               Redis       rate-limit counters (optional)
-  │                 └──► /metrics (internal only)
-  └─ IndexedDB: full offline copy per account, sync engine
+                         ┌───────────────────────────── Browser ─────────────────────────────┐
+                         │  React UI  ──►  Sync engine  ──►  IndexedDB (offline copy)        │
+                         └───────────────────────────────┬───────────────────────────────────┘
+                                                         │  HTTPS, cookie session
+                                                  ┌──────▼──────┐
+                                                  │    nginx    │  static app · /api proxy · CSP
+                                                  └──────┬──────┘  (keep-alive pool, /metrics hidden)
+                                      ┌──────────────────┼──────────────────┐
+                               ┌──────▼──────┐    ┌──────▼──────┐    ┌──────▼──────┐
+                               │ API replica │    │ API replica │    │ API replica │  Fastify, stateless
+                               └──────┬──────┘    └──────┬──────┘    └──────┬──────┘
+                                      └───────────┬──────┴────────┬─────────┘
+                                           ┌──────▼──────┐  ┌─────▼─────┐
+                                           │ PostgreSQL  │  │   Redis   │  rate-limit counters
+                                           └─────────────┘  └───────────┘
 ```
 
-**Offline-first sync.** Every edit is applied and stored in the browser's IndexedDB immediately, then uploaded after a short pause. `client/src/lib/engine.ts` is a plain, tested class that owns this: ordered uploads per note, a version number on every write so a stale write gets a `409` instead of silently overwriting, deletes remembered until the server confirms them, and a merge on start, on reconnect and every 20 seconds while offline. The note list loads without note text and each note's text is fetched when opened, so opening the app costs the same with ten notes or ten thousand.
+### How a save travels
 
-**Accounts.** Email and password; sessions are random tokens in an `HttpOnly`, `SameSite=Lax` cookie, stored hashed. Every query is scoped to the signed-in user.
+```text
+ keystroke ─► apply in memory ─► write to IndexedDB (immediate, batched) ─► debounce 650 ms
+                                                                              │
+        ┌─────────────────────────── never seen by server? ───────────────────┤
+        ▼ yes                                                                  ▼ no
+   POST /api/documents                              PUT /api/documents/:id  { version }
+        │                                                         │
+        └───────────► server returns new version ◄────────────────┤
+                                                                  ├─ 409 VERSION_CONFLICT ─► newer edit wins by timestamp,
+                                                                  │                          you get a notice
+                                                                  └─ network error ─► status "Offline", retry on reconnect
+```
 
-**Client structure.** The URL decides which note is open (`/notes/:id`). TanStack Query handles the session; the sync engine handles notes (a local-first store does not fit a request-cache model, so it is deliberately separate); Zustand holds UI preferences; CodeMirror and the Markdown renderer load only when a note is opened.
+**Design decisions worth knowing**
 
-## Scripts
+- **The sync engine is plain TypeScript, not a React hook** (`client/src/lib/engine.ts`). That is what makes the hardest logic, ordering, conflicts and tombstones, unit-testable without a browser.
+- **TanStack Query handles the session, not the notes.** A local-first store does not fit a request-cache model, so notes deliberately live in the engine.
+- **Note text is lazy.** The list API returns summaries; `GET /api/documents/:id` returns the text. CodeMirror and the Markdown renderer are also loaded on demand.
+- **The API is stateless.** Sessions live in PostgreSQL, so you can run as many replicas as you like behind nginx.
 
-| Command                                          | What it does                                           |
-| ------------------------------------------------ | ------------------------------------------------------ |
-| `npm run dev`                                    | API and web with live reload                           |
-| `npm run db:up` / `db:down`                      | Start / stop local PostgreSQL and Redis                |
-| `npm run db:migrate`                             | Apply pending migrations by hand                       |
-| `npm run db:claim -- you@example.com`            | Give notes that predate accounts to an account         |
-| `npm run db:import -- you@example.com file.json` | Import the old JSON store into an account              |
-| `npm run lint` / `format` / `typecheck`          | ESLint, Prettier, TypeScript                           |
-| `npm test` / `npm run test:client`               | API tests (real PostgreSQL) / sync-engine tests        |
-| `npm run e2e`                                    | Browser tests against a running stack (`E2E_BASE_URL`) |
-| `npm run verify`                                 | Everything CI runs, in order                           |
-| `npm run build`                                  | Production client build                                |
-| `npm start` / `npm run start:cluster`            | One API process / one per CPU                          |
+---
 
-A Husky pre-commit hook runs ESLint and Prettier on staged files.
+## 🗂️ Project Structure
 
-## Configuration
+```text
+stillnote/
+├── client/                         React app (Vite + TypeScript)
+│   ├── src/
+│   │   ├── lib/
+│   │   │   ├── engine.ts           Offline-first sync engine (+ engine.test.ts)
+│   │   │   ├── db.ts               IndexedDB store, one database per account
+│   │   │   ├── merge.ts            Server/local merge rules
+│   │   │   ├── api.ts              Typed API client
+│   │   │   └── format.ts           Markdown formatting commands for the editor
+│   │   ├── components/             Editor, sidebar, command palette, app shell
+│   │   │   └── ui/                 Accessible primitives (button, dialog, menu, tooltip)
+│   │   ├── hooks/                  Session (TanStack Query) and engine provider
+│   │   └── routes/                 Sign-in, notes, settings
+│   ├── nginx/                      Production web server config (CSP, caching, proxy)
+│   ├── public/                     Icons, PWA assets, theme-init.js
+│   └── Dockerfile
+├── server/                         Fastify API
+│   ├── src/
+│   │   ├── app.js                  Routes, plugins, error handling
+│   │   ├── auth.js                 Accounts and sessions
+│   │   ├── documentStore.js        PostgreSQL note store (versions, pagination)
+│   │   ├── metrics.js              Prometheus metrics
+│   │   ├── db.js · config.js       Pool, migration runner, environment config
+│   ├── migrations/                 Numbered SQL files applied at startup
+│   ├── scripts/                    Legacy import and claim tools
+│   ├── test/                       API tests against real PostgreSQL
+│   ├── server.js · cluster.js      Single-process and one-worker-per-CPU entry points
+│   └── Dockerfile
+├── e2e/                            Playwright browser suite (CSP + accessibility checks)
+├── loadtest/                       k6 workload, SQL seed data, rate-sweep runner
+├── ops/                            backup.sh and restore.sh
+├── scripts/verify.mjs              Runs the same checks as CI, in order
+├── docs/screenshots/               Images used in this README
+├── docker-compose.yml              Local PostgreSQL and Redis for development
+├── docker-compose.prod.yml         Full production stack
+├── .github/                        CI workflow and Dependabot
+└── .env.example                    Every setting, documented
+```
 
-Copy `.env.example` to `.env` for local runs. Defaults suit development.
+---
 
-| Variable                                       | Default                      | Purpose                                                            |
-| ---------------------------------------------- | ---------------------------- | ------------------------------------------------------------------ |
-| `DATABASE_URL`                                 | local compose database       | PostgreSQL connection                                              |
-| `PG_POOL_MAX`                                  | `20`                         | Connections per API process                                        |
-| `REDIS_URL`                                    | empty                        | Share rate limits across processes; empty keeps counters in memory |
-| `CLIENT_ORIGINS`                               | `localhost:5173` and `:4173` | Origins allowed to call the API                                    |
-| `TRUST_PROXY`                                  | `false`                      | Set `true` behind nginx or a load balancer so IPs are real         |
-| `COOKIE_SECURE`                                | `true` in production         | Send the session cookie only over HTTPS                            |
-| `ALLOW_REGISTRATION`                           | `true`                       | Set `false` once your accounts exist                               |
-| `SESSION_TTL_DAYS`                             | `30`                         | Session lifetime                                                   |
-| `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_SECONDS`  | `1200`, `60`                 | Requests per window per user (per IP when signed out)              |
-| `AUTH_RATE_LIMIT_MAX`                          | `10`                         | Sign-in / register attempts per minute per IP                      |
-| `METRICS_ENABLED`, `METRICS_TOKEN`             | `true`, empty                | `GET /metrics`; optional bearer token                              |
-| `SENTRY_DSN`                                   | empty                        | Enables error reporting when set                                   |
-| `LOG_LEVEL`, `WEB_CONCURRENCY`, `PORT`, `HOST` | `info`, CPU count, `4000`    | Logging, cluster size, listen address                              |
+## 🚀 Getting Started
 
-## Deploying with Docker
+### Prerequisites
 
-`docker-compose.prod.yml` runs nginx (static client and `/api` proxy), the API, PostgreSQL and Redis. Only the web port is published.
+| Tool                                              | Version                            | Needed for                                  |
+| ------------------------------------------------- | ---------------------------------- | ------------------------------------------- |
+| [Node.js](https://nodejs.org)                     | 20 or later (22 recommended)       | Everything                                  |
+| npm                                               | 9 or later (ships with Node)       | Everything                                  |
+| [Git](https://git-scm.com)                        | Any recent version                 | Cloning                                     |
+| [Docker](https://www.docker.com/products/docker-desktop/) | Docker Engine 24+ with Compose v2 | Local PostgreSQL and Redis, production stack |
+| [k6](https://k6.io/docs/get-started/installation/) | Any recent version (optional)      | Load tests only                             |
+
+### Installation and local setup
 
 ```bash
-cp .env.production.example .env.production      # set POSTGRES_PASSWORD and PUBLIC_ORIGIN
+# 1. Clone and install (client and server are npm workspaces, one install covers both)
+git clone https://github.com/NYN-05/Stillnote.git
+cd Stillnote
+npm install
+
+# 2. Create your local configuration (defaults work as-is for development)
+cp .env.example .env            # Windows PowerShell: Copy-Item .env.example .env
+
+# 3. Start PostgreSQL and Redis in Docker
+npm run db:up
+```
+
+The defaults in `.env.example` match `docker-compose.yml`, so no edits are required. The API creates the database tables itself on first start.
+
+---
+
+## ▶️ Running the Application
+
+### Development (API and web together)
+
+```bash
+npm run dev
+```
+
+| Service          | URL                    |
+| ---------------- | ---------------------- |
+| Web app          | http://localhost:5173  |
+| API              | http://localhost:4000  |
+| API health check | http://localhost:4000/api/health/ready |
+
+Open the web app and **create an account**. Vite proxies `/api` to the API, so there is no CORS setup to do.
+
+### Running the two services separately
+
+```bash
+npm run dev:server    # terminal 1: API with auto-reload
+npm run dev:client    # terminal 2: Vite dev server
+```
+
+### Useful commands
+
+| Command                                              | What it does                                                    |
+| ---------------------------------------------------- | --------------------------------------------------------------- |
+| `npm run verify`                                     | Lint, formatting, types, API tests, client tests and build, the same as CI |
+| `npm test` / `npm run test:client`                   | API tests (needs `npm run db:up`) / sync-engine tests           |
+| `npm run e2e`                                        | Browser tests against a running stack (set `E2E_BASE_URL`)      |
+| `npm run lint` · `format` · `typecheck`              | ESLint, Prettier, TypeScript                                    |
+| `npm run db:down`                                    | Stop local PostgreSQL and Redis                                 |
+| `npm run db:claim -- you@example.com`                | Assign notes created before accounts existed to an account      |
+| `npm start` · `npm run start:cluster`                | One API process · one worker per CPU (production)               |
+
+### 🐳 Production with Docker
+
+```bash
+cp .env.production.example .env.production   # set POSTGRES_PASSWORD and PUBLIC_ORIGIN
 docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
 docker compose -f docker-compose.prod.yml --env-file .env.production up -d --scale api=3   # more API replicas
 ```
 
-- Put a TLS-terminating proxy or load balancer in front of the web port. The app must be served from one origin (nginx serves the files and proxies `/api`), because the session cookie is same-site.
-- API replicas can start together: the migration runner takes a database lock. nginx re-resolves `api` every 10 seconds, so scaling needs no restart.
-- To use prebuilt images, set `STILLNOTE_API_IMAGE` and `STILLNOTE_WEB_IMAGE`. CI publishes both to GitHub Container Registry on pushes to `main` and on `v*` tags.
-- nginx sends a strict Content-Security-Policy (`script-src 'self'`), caches hashed assets for a year, and always revalidates `index.html` and the service worker. `/metrics` is never exposed through it.
+nginx serves the app and proxies `/api` on one origin (default `http://localhost:8080`). Put a TLS-terminating proxy or load balancer in front of it for public use, and set `ALLOW_REGISTRATION=false` once your accounts exist.
 
-## Operations
+<details>
+<summary><strong>Configuration reference</strong></summary>
 
-**Backups.** `ops/backup.sh [dir]` writes a verified, compressed dump and keeps the newest 14 (`KEEP` to change). `ops/restore.sh file.dump` replaces the database from a dump, stopping the API during the restore. Both take `COMPOSE_FILE` and `ENV_FILE`. Schedule the backup (cron) and copy dumps off the host. A restore was tested end to end: data deleted, restored from a dump, and the account and note came back intact.
+<br />
 
-```bash
-ENV_FILE=.env.production ops/backup.sh /var/backups/stillnote
-ENV_FILE=.env.production ops/restore.sh /var/backups/stillnote/stillnote-20260101T000000Z.dump
-```
+| Variable                                       | Default                      | Purpose                                                            |
+| ---------------------------------------------- | ---------------------------- | ------------------------------------------------------------------ |
+| `DATABASE_URL`                                 | local compose database       | PostgreSQL connection string                                       |
+| `PG_POOL_MAX`                                  | `20`                         | Connections per API process                                        |
+| `REDIS_URL`                                    | empty                        | Share rate limits across processes; empty keeps counters in memory |
+| `CLIENT_ORIGINS`                               | `localhost:5173`, `:4173`    | Origins allowed to call the API                                    |
+| `TRUST_PROXY`                                  | `false`                      | Set `true` behind nginx or a load balancer so client IPs are real  |
+| `COOKIE_SECURE`                                | `true` in production         | Send the session cookie only over HTTPS                            |
+| `ALLOW_REGISTRATION`                           | `true`                       | Set `false` to close sign-up                                       |
+| `SESSION_TTL_DAYS`                             | `30`                         | Session lifetime                                                   |
+| `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_SECONDS`  | `1200`, `60`                 | Requests per window per signed-in user (per IP when signed out)    |
+| `AUTH_RATE_LIMIT_MAX`                          | `10`                         | Sign-in and sign-up attempts per minute per IP                     |
+| `METRICS_ENABLED`, `METRICS_TOKEN`             | `true`, empty                | `GET /metrics`, with an optional bearer token                      |
+| `SENTRY_DSN`                                   | empty                        | Enables error reporting when set                                   |
+| `LOG_LEVEL`, `WEB_CONCURRENCY`, `PORT`, `HOST` | `info`, CPU count, `4000`    | Logging, cluster size, listen address                              |
 
-**Metrics.** `GET /metrics` on each API container (internal network): request latency histograms by method, route template and status, PostgreSQL pool gauges, and Node process metrics. Run one process per container and scrape each; under `start:cluster` a scrape reaches one worker only.
+</details>
 
-**Logs and health.** JSON logs (pino) with an `x-request-id` on every response, cookies redacted. `/api/health/live` is process liveness; `/api/health/ready` checks the database (`503` if down) and reports Redis, which does not fail readiness because rate limiting fails open.
+### 🔧 Operations
 
-**Errors.** With `SENTRY_DSN` set, unexpected (5xx) errors are reported with the request id and route.
+- **Backups:** `ops/backup.sh` writes a verified, compressed dump and keeps the newest 14. `ops/restore.sh <dump>` restores it, stopping the API while it runs. A full data-loss drill (delete, restore, verify) has been run end to end.
+  ```bash
+  ENV_FILE=.env.production ops/backup.sh /var/backups/stillnote
+  ENV_FILE=.env.production ops/restore.sh /var/backups/stillnote/stillnote-<timestamp>.dump
+  ```
+- **Metrics:** `GET /metrics` on each API container (internal network only; nginx never exposes it): latency histograms by route template, database pool gauges, process metrics.
+- **Health:** `/api/health/live` for liveness; `/api/health/ready` checks the database and reports Redis.
+- **Logs:** JSON (pino) with an `x-request-id` on every response; cookies are redacted.
 
-**Accounts.** Existing notes from before accounts live under a placeholder user until `npm run db:claim`. Soft-deleted notes stay in the table.
+---
 
-## Testing and CI
+## ✅ Testing and Quality
 
-| Layer               | Tool          | What is covered                                                                                                                                                                           |
-| ------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| API and data        | `node --test` | Per-user isolation, versions and conflicts, pagination, sessions, rate limits, origin guard, metrics, error capture, against real PostgreSQL in a throwaway schema                        |
-| Sync engine         | Vitest        | Offline start, ordered saves, conflicts both ways, tombstones, 404 and 409 recovery, merge rules                                                                                          |
-| Browser, full stack | Playwright    | Sign-up and sign-in, formatting, split preview, reload persistence, offline edits syncing back, account isolation, script injection, CSP violations, accessibility (axe, light and dark) |
+| Layer               | Tool          | Count | What it proves                                                                                                                                                  |
+| ------------------- | ------------- | ----: | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API and data        | `node --test` |    18 | Per-user isolation, version conflicts under concurrent writers, pagination, sessions, rate limits, origin guard, metrics, error capture, on real PostgreSQL     |
+| Sync engine         | Vitest        |    22 | Offline start, ordered saves, conflicts both ways, tombstones, 404 and 409 recovery, merge rules, deep links to notes not yet on the device                     |
+| Browser, full stack | Playwright    |    11 | Sign-up and sign-in, formatting, split preview, reload persistence, offline edits syncing back, account isolation, script-injection safety, zero console or CSP violations, accessibility scans (axe) in light and dark |
 
-`.github/workflows/ci.yml` runs lint, formatting, types, API and client tests and the build; then starts the production compose stack (nginx, two API replicas, PostgreSQL, Redis) and runs the browser suite against it; then, on `main` and tags, publishes the images. Testing the nginx stack rather than the dev server is deliberate: it caught a CSP-blocked inline script and font that dev mode hides.
+CI (`.github/workflows/ci.yml`) runs lint, formatting, type checks, API and client tests and the build; then brings up the production Docker stack (nginx, two API replicas, PostgreSQL, Redis) and runs the browser suite plus a load-test gate against it; then publishes images to GitHub Container Registry from `main` and version tags.
 
-## Load testing
+Testing against the nginx stack, not just the dev server, is deliberate. It has already caught a Content-Security-Policy violation and a proxy connection-exhaustion bug that dev mode hides.
 
-`loadtest/` holds a [k6](https://k6.io) kit (`winget install k6`, or see k6.io). It seeds 500 accounts and 10,000 notes (about 3 KB each) directly in SQL, so the test needs no sign-in, then drives a realistic mix at a fixed request rate: 70% saves, 20% opening a note, 10% loading the list.
+---
+
+## ⚡ Performance
+
+Measured with [k6](https://k6.io) on one Windows machine (16 threads) where the load generator, Docker Desktop, nginx, the API and PostgreSQL all share the same CPUs, so these numbers are a floor. The data set is 500 accounts and 10,000 notes of about 3 KB each, driven at a fixed request rate with a realistic mix: **70% saves, 20% opening a note, 10% loading the list**.
+
+| Setup                 | Request rate | p50    | p95      | p99      | Errors             |
+| --------------------- | -----------: | ------ | -------- | -------- | ------------------ |
+| 1 API replica         |      100 / s | 5 ms   | 8 ms     | 11 ms    | 0%                 |
+| 1 API replica         |    1,000 / s | 3 ms   | 9 ms     | 18 ms    | 0%                 |
+| 1 API replica         |    1,600 / s | 6 ms   | 25 ms    | 60 ms    | 0%                 |
+| 1 API replica         |    2,000 / s | 879 ms | 1,448 ms | 2,824 ms | saturated (1,764/s)|
+| 2 replicas, 3 minutes |      300 / s | 4 ms   | 11 ms    | 14 ms    | 0%, memory flat    |
+
+A single API process comfortably sustains **16× a 100 requests-per-second target** within a 150 ms p95 goal. A person typing sends roughly one save per second, so 1,600 requests per second is on the order of a thousand people writing at the same moment.
+
+Reproduce it yourself:
 
 ```bash
 export COMPOSE_FILE=docker-compose.prod.yml ENV_FILE=.env.production
-npm run loadtest:seed                       # or: npm run loadtest:seed -- 1000 20; add -- --cleanup to remove it
+npm run loadtest:seed
 npm run loadtest -- --rates 100,300,600,1000 --duration 60s --base-url http://localhost:8080
 ```
 
-Pass criteria per step: p95 under 150 ms, p99 under 400 ms, error rate under 0.1%, no dropped iterations. Failures are broken down by HTTP status. The runner writes raw summaries to `loadtest/results/`.
+---
 
-**Measured** on one Windows 11 machine (16 threads) where the load generator, Docker Desktop, nginx, the API and PostgreSQL all share the same CPUs, so treat these as a floor:
+## 🔌 API Reference and Core Usage
 
-| Setup                  | Request rate | p50     | p95        | p99        | Errors             |
-| ---------------------- | ------------ | ------- | ---------- | ---------- | ------------------ |
-| 1 API replica          | 100 / s      | 5 ms    | 8 ms       | 11 ms      | 0%                 |
-| 1 API replica          | 1,000 / s    | 3 ms    | 9 ms       | 18 ms      | 0%                 |
-| 1 API replica          | 1,600 / s    | 6 ms    | 25 ms      | 60 ms      | 0%                 |
-| 1 API replica          | 2,000 / s    | 879 ms  | 1,448 ms   | 2,824 ms   | queueing (1,764/s) |
-| 2 replicas, 3 minutes  | 300 / s      | 4 ms    | 11 ms      | 14 ms      | 0%, memory flat    |
-| 3 replicas             | 2,500 / s    | 12 ms   | 360 ms     | 641 ms     | 0%, near ceiling   |
+All endpoints speak JSON. Sign-in sets an `HttpOnly` session cookie; every `/api/documents` route needs it and only ever sees the signed-in user's notes.
 
-So the target of 100 requests per second has roughly 16 times headroom on a single API process within the latency goals. One Node process uses about one core (about 97% CPU at saturation), PostgreSQL reaches about 180% CPU on this write-heavy mix, and the practical limit on this machine is about 1,700 req/s for one replica and about 2,500 req/s for three.
+| Method   | Endpoint                          | Description                                                                                                          |
+| -------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/api/auth/register`              | Create an account (`email`, `password` of 10 to 128 characters) and sign in                                          |
+| `POST`   | `/api/auth/login`                 | Sign in                                                                                                              |
+| `POST`   | `/api/auth/logout`                | End the session                                                                                                      |
+| `GET`    | `/api/auth/me`                    | The signed-in user, or `401`                                                                                         |
+| `GET`    | `/api/documents?limit=&cursor=`   | Note summaries without text (`id`, `title`, `snippet`, `pinned`, `version`, timestamps), newest first, cursor-paged |
+| `GET`    | `/api/documents/:id`              | One note with its full text                                                                                          |
+| `POST`   | `/api/documents`                  | Create a note (optional `id`, `title`, `content`, `pinned`)                                                          |
+| `PUT`    | `/api/documents/:id`              | Update `title`, `content` and/or `pinned`; include `version` to make it conditional                                  |
+| `DELETE` | `/api/documents/:id`              | Delete a note (soft delete)                                                                                          |
+| `GET`    | `/api/health/live` · `/ready`     | Liveness · readiness (database and Redis)                                                                            |
+| `GET`    | `/metrics`                        | Prometheus metrics (internal network; optional bearer token)                                                         |
 
-Two real problems showed up and are fixed: nginx originally opened a new connection to the API per request and ran out of ports at about 1,000 req/s (`Address not available`, answered as 502); it now keeps a pool of connections open. Node's keep-alive timeout is set above nginx's so idle connections are not closed under it. Re-run the sweep after any change to the proxy, database or API.
+Limits: titles up to 120 characters, note text up to 500,000.
 
-## API
+**Try it from the terminal**
 
-Auth endpoints set or clear the `sid` cookie. All `/api/documents` endpoints require a session and only see the signed-in user's notes (`401` otherwise; another user's note is a `404`). Errors are `{ "error": { "code", "message", "details"? } }`.
+```bash
+# Create an account (the cookie is saved in jar.txt)
+curl -c jar.txt -X POST http://localhost:4000/api/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"a-long-password"}'
 
-| Method   | Endpoint                        | Purpose                                                                                                                  |
-| -------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `POST`   | `/api/auth/register`            | Create an account (`email`, `password` of 10 to 128 characters) and sign in                                              |
-| `POST`   | `/api/auth/login`               | Sign in                                                                                                                  |
-| `POST`   | `/api/auth/logout`              | End the session                                                                                                          |
-| `GET`    | `/api/auth/me`                  | The signed-in user, or `401`                                                                                             |
-| `GET`    | `/api/documents?limit=&cursor=` | Summaries without text (`id`, `title`, `snippet`, `pinned`, `version`, timestamps), newest first                         |
-| `GET`    | `/api/documents/:id`            | One note with its text                                                                                                   |
-| `POST`   | `/api/documents`                | Create (optional `id`, `title`, `content`, `pinned`)                                                                     |
-| `PUT`    | `/api/documents/:id`            | Update `title`, `content` and/or `pinned`; `version` makes it conditional (`409 VERSION_CONFLICT` with the current note) |
-| `DELETE` | `/api/documents/:id`            | Delete (soft)                                                                                                            |
-| `GET`    | `/api/health/live`, `/ready`    | Liveness, readiness                                                                                                      |
-| `GET`    | `/metrics`                      | Prometheus metrics (internal; optional bearer token)                                                                     |
-
-Titles are limited to 120 characters and note text to 500,000.
-
-## Security notes
-
-- Passwords: argon2id. Sessions: random 256-bit tokens, only their SHA-256 stored, revocable on logout. Unknown emails cost the same time as wrong passwords.
-- Cookie: `HttpOnly`, `SameSite=Lax`, `Secure` in production. Unsafe requests from origins outside `CLIENT_ORIGINS` are rejected.
-- Markdown preview never renders raw HTML and strips unsafe URL schemes (tested). Links open in a new tab with `noopener`.
-- Rate limits protect sign-in per IP and everything else per account.
-- Run the stack behind HTTPS. Sign-up is open by default, and an "email already exists" answer reveals registered emails; set `ALLOW_REGISTRATION=false` once you have your accounts.
-
-## Known limits
-
-- Conflict handling is "newer edit wins", decided with the editing device's clock, and you are told when the server's version replaces yours. It is not a merge: simultaneous edits to one note from two devices keep one version.
-- Notes you have never opened on this device cannot be read offline, and search inside them covers only the first 200 characters until they are opened.
-- No password reset, email verification, folders or tags yet.
-- Signing out keeps this device's offline copy; clear the site's data on a shared computer.
-
-## Project structure
-
-```text
-stillnote/
-├── client/                 React app (Vite, TypeScript)
-│   ├── src/lib/            engine.ts (sync), db.ts (IndexedDB), api.ts, merge.ts, format.ts
-│   ├── src/components/     editor, sidebar, command palette, ui/ primitives
-│   ├── src/routes/         auth, notes, settings
-│   ├── nginx/              production web server config
-│   └── Dockerfile
-├── server/                 Fastify API
-│   ├── src/                app.js, auth.js, documentStore.js, db.js, metrics.js, config.js
-│   ├── migrations/         numbered SQL files, applied at startup
-│   ├── scripts/            import and claim tools
-│   ├── test/
-│   └── Dockerfile
-├── e2e/                    Playwright suite
-├── loadtest/               k6 script, SQL seed data, rate-sweep runner
-├── ops/                    backup.sh, restore.sh
-├── scripts/verify.mjs      local CI
-├── docker-compose.yml      dev PostgreSQL and Redis
-├── docker-compose.prod.yml full stack
-└── .github/                CI and Dependabot
+# Create a note, then list your notes
+curl -b jar.txt -X POST http://localhost:4000/api/documents \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Hello","content":"# Hi from curl"}'
+curl -b jar.txt http://localhost:4000/api/documents
 ```
+
+**Conflicts are explicit.** Saving with an out-of-date `version` returns the current note so the client can decide:
+
+```json
+{
+  "error": {
+    "code": "VERSION_CONFLICT",
+    "message": "The document was changed by another session.",
+    "details": { "current": { "id": "…", "title": "Hello", "content": "…", "version": 4 } }
+  }
+}
+```
+
+**Keyboard shortcuts**
+
+| Shortcut                  | Action                  |
+| ------------------------- | ----------------------- |
+| `Ctrl/⌘ + K`              | Command palette         |
+| `Alt + N`                 | New note                |
+| `Ctrl/⌘ + S`              | Save now                |
+| `Ctrl/⌘ + B` · `Ctrl/⌘ + I` | Bold · italic         |
+| `Ctrl/⌘ + \`              | Show or hide the sidebar |
+
+---
+
+## 🔐 Security Notes
+
+- **Passwords** are hashed with argon2id. **Sessions** are random 256-bit tokens; only their SHA-256 is stored, and logout revokes them. Unknown emails cost the same time as wrong passwords.
+- **Cookies** are `HttpOnly` and `SameSite=Lax`, and `Secure` in production. Unsafe requests from origins outside `CLIENT_ORIGINS` are rejected.
+- **Content:** Markdown never renders raw HTML, unsafe URL schemes are stripped, and nginx sends a strict `script-src 'self'` policy.
+- **Abuse:** sign-in is rate-limited per IP; everything else per account.
+- Run behind HTTPS. Sign-up is open by default, and "email already exists" reveals registered emails, so set `ALLOW_REGISTRATION=false` once you have your accounts.
+
+## 🚧 Known Limits
+
+- Conflict handling is "newer edit wins" using the editing device's clock. It is not a merge: two devices editing the **same note at the same moment** keep one version, and you are notified.
+- Notes you have never opened on a device cannot be read offline there, and search inside them covers only their first 200 characters until opened.
+- Not built yet: password reset, email verification, folders and tags.
+- Signing out keeps this device's offline copy. Clear the site's data on a shared computer.
+
+## 🤝 Contributing
+
+1. Fork the repository and create a branch.
+2. Run `npm run verify` before you push; it runs exactly what CI runs.
+3. A pre-commit hook (ESLint and Prettier on staged files) installs with `npm install`.
+4. Use [Conventional Commits](https://www.conventionalcommits.org) (`feat:`, `fix:`, `docs:`, `test:`, `perf:`, `ci:`, `chore:`) and open a pull request.
+
+---
+
+## 📄 License
+
+Released under the **MIT License**. See [LICENSE](LICENSE) for the full text.
+
+## 🙏 Acknowledgments
+
+Stillnote stands on excellent open-source work:
+
+- [React](https://react.dev), [Vite](https://vitejs.dev), [Tailwind CSS](https://tailwindcss.com) and [TypeScript](https://www.typescriptlang.org) for the app
+- [CodeMirror](https://codemirror.net) for the editor, [react-markdown](https://github.com/remarkjs/react-markdown) and [remark-gfm](https://github.com/remarkjs/remark-gfm) for rendering
+- [Radix UI](https://www.radix-ui.com), [cmdk](https://cmdk.paco.me), [sonner](https://sonner.emilkowal.ski) and [Lucide](https://lucide.dev) for accessible interface pieces
+- [TanStack Query](https://tanstack.com/query), [Zustand](https://zustand-demo.pmnd.rs), [React Router](https://reactrouter.com) and [idb](https://github.com/jakearchibald/idb) for state, routing and storage
+- [Fastify](https://fastify.dev), [PostgreSQL](https://www.postgresql.org), [Redis](https://redis.io) and [argon2](https://github.com/ranisalt/node-argon2) for the backend
+- [Playwright](https://playwright.dev), [axe-core](https://github.com/dequelabs/axe-core), [Vitest](https://vitest.dev) and [k6](https://k6.io) for testing and load testing
+
+<div align="center">
+
+Made with care by [NYN-05](https://github.com/NYN-05) · [Report an issue](https://github.com/NYN-05/Stillnote/issues)
+
+</div>
