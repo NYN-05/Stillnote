@@ -1,0 +1,10 @@
+# Normalize line endings so Windows and Linux contributors produce identical diffs.
+* text=auto eol=lf
+
+# Shell scripts must be LF or they fail in Linux containers and CI.
+*.sh text eol=lf
+
+# Binary files: never rewrite or diff as text.
+*.png binary
+*.woff2 binary
+*.dump binary
