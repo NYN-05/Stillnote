@@ -6,6 +6,8 @@ import type { Note, NoteChanges, SyncStatus } from './types';
 export interface EngineState {
   /** False until there is something to show: local notes, or the first server answer. */
   ready: boolean;
+  /** True once the first attempt to reach the server has finished, whether it succeeded or the device is offline. */
+  reconciled: boolean;
   notes: Note[];
   activeId: string | null;
   status: SyncStatus;
@@ -47,6 +49,7 @@ export function makeNote(partial: Partial<Note> = {}): Note {
 export class SyncEngine {
   private state: EngineState = {
     ready: false,
+    reconciled: false,
     notes: [],
     activeId: null,
     status: 'saving',
@@ -265,7 +268,7 @@ export class SyncEngine {
     try {
       remote = await this.api.list();
     } catch {
-      this.setState({ connected: false, status: 'offline', ready: true });
+      this.setState({ connected: false, status: 'offline', ready: true, reconciled: true });
       if (this.state.notes.length === 0) this.commit([makeNote()], { activeId: null, autoActive: true });
       return;
     }
@@ -293,7 +296,7 @@ export class SyncEngine {
     }
     const activeId = notes.some((note) => note.id === this.state.activeId) ? this.state.activeId : notes[0].id;
     this.commit(notes, { activeId, tombstones });
-    this.setState({ ready: true });
+    this.setState({ ready: true, reconciled: true });
 
     const editsAtStart = this.editCount;
     const results = await Promise.allSettled(needsSync.map((note) => this.synchronize(note.id)));

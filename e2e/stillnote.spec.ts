@@ -144,6 +144,29 @@ test.describe('writing', () => {
   });
 });
 
+test.describe('links', () => {
+  test('a link to a note that is not on this device yet opens that note', async ({ account, browser }) => {
+    const { page } = account;
+    await page.getByLabel('Note title').fill('Shared plan');
+    await editorText(page).click();
+    await page.keyboard.type('reachable by link');
+    await waitSaved(page);
+    const noteUrl = page.url();
+
+    // Same account, but a fresh browser profile: cookies carry over, the offline database does not.
+    const second = await browser.newContext({
+      baseURL: test.info().project.use.baseURL,
+      storageState: await page.context().storageState(),
+    });
+    const secondPage = await second.newPage();
+    await secondPage.goto(noteUrl);
+    await expect(secondPage.getByLabel('Note title')).toHaveValue('Shared plan');
+    await expect(secondPage.locator('.cm-content')).toContainText('reachable by link');
+    expect(secondPage.url()).toBe(noteUrl);
+    await second.close();
+  });
+});
+
 test.describe('library', () => {
   test('new note, pin, palette navigation and delete', async ({ account }) => {
     const { page } = account;

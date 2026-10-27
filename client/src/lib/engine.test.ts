@@ -151,6 +151,21 @@ describe('mergeNotes', () => {
 });
 
 describe('SyncEngine', () => {
+  it('reports the first server sync as done so a deep link can wait for it', async () => {
+    const server = fakeServer([remoteNote('linked', 'only on the server', T2)]);
+    const store = createMemoryStore({ notes: [localNote('a', 'here already', T1)] });
+    const engine = new SyncEngine({ api: server.api, store, saveDelayMs: 5, persistDelayMs: 5, retryIntervalMs: 1_000_000 });
+    expect(engine.getState().reconciled).toBe(false);
+    await engine.start();
+    expect(engine.getState().reconciled).toBe(true);
+    expect(engine.getState().notes.map((note) => note.id)).toContain('linked');
+
+    const offline = fakeServer();
+    offline.setOffline(true);
+    const { engine: offlineEngine } = await startEngine(offline, { notes: [localNote('b', 'x', T1)] });
+    expect(offlineEngine.getState().reconciled).toBe(true);
+  });
+
   it('opens immediately from local notes even when the server is down', async () => {
     const server = fakeServer();
     server.setOffline(true);

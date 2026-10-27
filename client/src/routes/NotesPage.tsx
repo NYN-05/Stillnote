@@ -12,6 +12,7 @@ export default function NotesPage() {
   const engine = useEngine();
   const navigate = useNavigate();
   const ready = useEngineState((state) => state.ready);
+  const reconciled = useEngineState((state) => state.reconciled);
   const notes = useEngineState((state) => state.notes);
   const activeId = useEngineState((state) => state.activeId);
   const exists = Boolean(id) && notes.some((note) => note.id === id);
@@ -20,7 +21,9 @@ export default function NotesPage() {
     if (ready && id && exists) engine.select(id);
   }, [engine, exists, id, ready]);
 
-  if (!ready) {
+  // A linked note can exist only on the server (a bookmark opened on a new device), so do not give up
+  // on an unknown ID until the first sync has had its chance to bring it in.
+  if (!ready || (id && !exists && !reconciled)) {
     return (
       <div className="mx-auto w-full max-w-3xl space-y-4 px-8 pt-10" aria-busy="true" aria-label="Loading your notes">
         <Skeleton className="h-8 w-1/2" />
