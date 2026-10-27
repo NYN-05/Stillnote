@@ -1,5 +1,5 @@
 # Build context is the repository root:  docker build -f server/Dockerfile .
-FROM node:22-slim AS deps
+FROM node:26-slim AS deps
 WORKDIR /app
 # Workspace manifests only, so this layer is cached until dependencies change.
 COPY package.json package-lock.json ./
@@ -7,7 +7,7 @@ COPY server/package.json server/
 COPY client/package.json client/
 RUN npm ci --omit=dev --workspace @stillnote/server --include-workspace-root=false
 
-FROM node:22-slim
+FROM node:26-slim
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
