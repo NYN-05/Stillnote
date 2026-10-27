@@ -33,7 +33,7 @@ jobs:
       DATABASE_URL: postgres://stillnote:stillnote@localhost:5432/stillnote
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -56,7 +56,7 @@ jobs:
       COMPOSE: docker compose -f docker-compose.prod.yml --env-file .env.ci
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
