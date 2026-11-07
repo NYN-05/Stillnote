@@ -23,6 +23,7 @@ interface RichTextEditorProps {
   editable?: boolean;
   onEditor?: (editor: Editor | null) => void;
   className?: string;
+  externalUpdatesImmediate?: boolean;
 }
 
 function createExtensions(placeholder: string) {
@@ -74,6 +75,7 @@ export function RichTextEditor({
   editable = true,
   onEditor,
   className,
+  externalUpdatesImmediate = false,
 }: RichTextEditorProps) {
   const editorRef = useRef<Editor | null>(null);
   const lastEmitted = useRef<string | null>(null);
@@ -157,14 +159,14 @@ export function RichTextEditor({
     }
     // Never move the caret while the user is in the document. The pending copy
     // is applied on blur, after their own edits have already been stored.
-    if (editor.isFocused) {
+    if (editor.isFocused && !externalUpdatesImmediate) {
       pendingExternal.current = next;
       return;
     }
     pendingExternal.current = null;
     editor.commands.setContent(next, false);
     lastEmitted.current = editor.getHTML();
-  }, [editor, value]);
+  }, [editor, value, externalUpdatesImmediate]);
 
   return <EditorContent editor={editor} className={cn('rich-text-host', !editable && 'rich-text-host-readonly', className)} />;
 }

@@ -27,11 +27,11 @@
 
 | Layer        | Technology                                                             |
 | ------------ | ---------------------------------------------------------------------- |
-| Client       | React 18, TypeScript, Vite, React Router                               |
+| Client       | React 18, TypeScript, Vite, React Router, Yjs                           |
 | Editor       | Tiptap, Markdown support, DOMPurify                                    |
 | State & data | Zustand, TanStack Query, IndexedDB                                     |
-| API          | Fastify 5, Node.js 20+                                                 |
-| Persistence  | PostgreSQL 16, Redis 7 (optional rate-limit store)                     |
+| API          | Fastify 5, Node.js 20+, WebSocket                                       |
+| Persistence  | PostgreSQL 16 (collaborative state and version history), Redis 7        |
 | Quality      | ESLint, Prettier, Vitest, Node test runner, Playwright                 |
 | Operations   | Docker Compose, Helmet, compression, health checks, Prometheus metrics |
 
@@ -181,7 +181,25 @@ docker compose -f docker-compose.prod.yml --env-file .env.production down
 
 ## 📜 Commands
 
-| Command                  | Description                                    |
+## 🧹 Delete a user account
+
+To permanently delete one account, including its password hash, sessions, and notes, run the guarded PowerShell script:
+
+```powershell
+.\scripts\Remove-StillnoteUser.ps1 -Email user@example.com
+```
+
+The script previews the account, requires typing an exact `DELETE user@example.com` confirmation, and verifies that the cascading deletion removed the user, notes, and sessions. This cannot be undone without a database backup.
+
+To erase **all Stillnote application data** while keeping the database schema and migration history:
+
+```powershell
+.\scripts\Clear-StillnoteData.ps1 -Confirmation 'ERASE STILLNOTE DATA'
+```
+
+This removes every user, password hash, session, and note from the Stillnote database. It does not delete other PostgreSQL databases, Docker volumes, Redis, or the database schema. Make a backup first; the operation is irreversible.
+
+| Command | Description |
 | ------------------------ | ---------------------------------------------- |
 | `npm run dev`          | Start the client and API together              |
 | `npm run dev:client`   | Start only the Vite client                     |

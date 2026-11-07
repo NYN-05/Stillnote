@@ -4,6 +4,7 @@ import {
   CURRENT_SCHEMA_VERSION,
   DEFAULT_NOTE_TITLE,
   MAX_TITLE_LENGTH,
+  createId,
   type Note,
   type NoteChanges,
   type RemoteNote,
@@ -133,7 +134,7 @@ export function mergeNotes(
 export function makeNote(partial: Partial<Note> = {}): Note {
   const now = new Date().toISOString();
   return {
-    id: crypto.randomUUID(),
+    id: createId(),
     title: DEFAULT_NOTE_TITLE,
     content: '',
     contentFormat: 'html',
@@ -189,6 +190,7 @@ export class SyncEngine {
   private reconciling: Promise<void> | null = null;
   private retryTimer: ReturnType<typeof setInterval> | null = null;
   private started = false;
+  private collaborativeIds = new Set<string>();
 
   constructor(options: EngineOptions) {
     this.api = options.api;
@@ -303,6 +305,28 @@ export class SyncEngine {
     this.scheduleSync(id);
   }
 
+  enableCollaboration(id: string) {
+    this.collaborativeIds.add(id);
+    if (this.state.conflict?.noteId === id) this.setState({ conflict: null });
+  }
+
+  editCollaborativeContent(id: string, content: string) {
+    const note = this.state.notes.find((item) => item.id === id);
+    if (!note || note.content === null) return;
+    const next = {
+      ...note,
+      content,
+      contentFormat: 'html' as const,
+      contentSchemaVersion: CURRENT_SCHEMA_VERSION,
+      updatedAt: new Date().toISOString(),
+    };
+    this.editRevisions.set(id, (this.editRevisions.get(id) ?? 0) + 1);
+    this.commit(
+      this.state.notes.map((item) => (item.id === id ? next : item)),
+      { deferPersist: true },
+    );
+  }
+
   create(): Note {
     const previous = this.state.activeId;
     const note = makeNote();
@@ -401,7 +425,7 @@ export class SyncEngine {
 
   /** Saves the open note's changes to the server immediately. */
   saveNow(id: string) {
-    if (this.state.conflict?.noteId === id) {
+    if (this.state.conflict?.noteId === id && !this.collaborativeIds.has(id)) {
       this.notify('Choose which version to keep first');
       return Promise.resolve();
     }
@@ -574,7 +598,7 @@ export class SyncEngine {
     // A duplicate timer (or an explicit save with no new edits) must not create
     // another server version. A forced reconcile still runs.
     if (!force && this.syncedFingerprints.get(id) === fingerprint(note)) return;
-    if (this.state.conflict?.noteId === id) {
+    if (this.state.conflict?.noteId === id && !this.collaborativeIds.has(id)) {
       this.clearSaveTimers(id);
       return;
     }
@@ -582,7 +606,7 @@ export class SyncEngine {
     const contentFormat = note.contentFormat ?? 'markdown';
     const sentContent = note.content;
     const contentFields =
-      note.content !== null
+      note.content !== null && !this.collaborativeIds.has(id)
         ? {
             content: note.content,
             contentFormat,
@@ -594,7 +618,7 @@ export class SyncEngine {
       pinned: note.pinned,
       updatedAt: note.updatedAt,
       ...contentFields,
-      ...(Number.isInteger(note.version) ? { version: note.version } : {}),
+      ...(!this.collaborativeIds.has(id) && Number.isInteger(note.version) ? { version: note.version } : {}),
     };
     const createBody: Record<string, unknown> = {
       id: note.id,

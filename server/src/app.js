@@ -217,6 +217,14 @@ async function buildApp({ config, store, auth, redis = null, logger, metrics = n
       await store.delete(request.user.id, request.params.id);
       return reply.code(204).send();
     });
+
+    notes.get('/api/documents/:id/versions', async (request) => ({
+      versions: await store.listVersions(request.user.id, request.params.id),
+    }));
+
+    notes.post('/api/documents/:id/versions/:version/restore', async (request) => ({
+      document: await store.restoreVersion(request.user.id, request.params.id, Number(request.params.version)),
+    }));
   });
 
   return app;

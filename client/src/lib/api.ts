@@ -89,6 +89,17 @@ export const updateNote = async (id: string, changes: Record<string, unknown>) =
 
 export const deleteNote = (id: string) => request<null>(`/api/documents/${encodeURIComponent(id)}`, { method: 'DELETE' });
 
+export const listNoteVersions = async (id: string) =>
+  (
+    await request<{ versions: Array<{ version: number; content: string; createdAt: string }> }>(
+      `/api/documents/${encodeURIComponent(id)}/versions`,
+    )
+  ).versions;
+
+export const restoreNoteVersion = async (id: string, version: number) =>
+  (await request<{ document: RemoteNote }>(`/api/documents/${encodeURIComponent(id)}/versions/${version}/restore`, { method: 'POST' }))
+    .document;
+
 export const getCurrentUser = async () => (await request<{ user: User }>('/api/auth/me', { skipUnauthorizedHandler: true })).user;
 
 export const signIn = async (email: string, password: string) =>

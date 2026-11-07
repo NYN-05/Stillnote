@@ -150,6 +150,71 @@ class DocumentStore {
     );
     if (rowCount === 0) throw new StoreError('Document not found.', 404, 'DOCUMENT_NOT_FOUND');
   }
+
+  async getCollaborationState(userId, id) {
+    const { rows } = await this.pool.query('SELECT state FROM document_collaboration WHERE user_id = $1 AND document_id = $2', [
+      userId,
+      id,
+    ]);
+    return rows[0]?.state ?? null;
+  }
+
+  async saveCollaborationState(userId, id, state, content) {
+    const normalized = normalizeContent({ content, contentFormat: 'html', contentSchemaVersion: policy.schemaVersion });
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(
+        `UPDATE notes
+         SET content = $3, content_format = 'html', content_schema_version = $4,
+             plain_text = $5, version = version + 1, updated_at = now()
+         WHERE user_id = $1 AND id = $2 AND deleted_at IS NULL
+         RETURNING version`,
+        [userId, id, normalized.content, normalized.contentSchemaVersion, normalized.plainText],
+      );
+      if (!rows[0]) throw new StoreError('Document not found.', 404, 'DOCUMENT_NOT_FOUND');
+      await client.query(
+        `INSERT INTO document_collaboration (user_id, document_id, state)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, document_id)
+         DO UPDATE SET state = EXCLUDED.state, updated_at = now()`,
+        [userId, id, state],
+      );
+      await client.query(
+        `INSERT INTO document_versions (user_id, document_id, version, content)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT DO NOTHING`,
+        [userId, id, rows[0].version, normalized.content],
+      );
+      await client.query('COMMIT');
+      return rows[0].version;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listVersions(userId, id) {
+    const { rows } = await this.pool.query(
+      `SELECT version, content, created_at
+       FROM document_versions
+       WHERE user_id = $1 AND document_id = $2
+       ORDER BY version DESC LIMIT 50`,
+      [userId, id],
+    );
+    return rows.map((row) => ({ version: row.version, content: row.content, createdAt: row.created_at.toISOString() }));
+  }
+
+  async restoreVersion(userId, id, version) {
+    const { rows } = await this.pool.query(
+      'SELECT content FROM document_versions WHERE user_id = $1 AND document_id = $2 AND version = $3',
+      [userId, id, version],
+    );
+    if (!rows[0]) throw new StoreError('Document version not found.', 404, 'VERSION_NOT_FOUND');
+    return this.update(userId, id, { content: rows[0].content, contentFormat: 'html' });
+  }
 }
 
 function toDocument(row) {

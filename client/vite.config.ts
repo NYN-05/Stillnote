@@ -39,12 +39,18 @@ export default defineConfig({
   server: {
     port: Number(process.env.DEV_PORT || 5173),
     strictPort: true,
-    proxy: { '/api': { target: apiTarget, changeOrigin: true } },
+    proxy: {
+      '/api': { target: apiTarget, changeOrigin: true },
+      '/ws': { target: apiTarget, changeOrigin: true, ws: true },
+    },
   },
   preview: {
     port: Number(process.env.PREVIEW_PORT || 4173),
     strictPort: true,
-    proxy: { '/api': { target: apiTarget, changeOrigin: true } },
+    proxy: {
+      '/api': { target: apiTarget, changeOrigin: true },
+      '/ws': { target: apiTarget, changeOrigin: true, ws: true },
+    },
   },
   build: {
     sourcemap: false,

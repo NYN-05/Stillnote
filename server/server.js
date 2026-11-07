@@ -7,6 +7,7 @@ const { DocumentStore } = require('./src/documentStore');
 const { AuthService } = require('./src/auth');
 const { buildApp } = require('./src/app');
 const { createMetrics } = require('./src/metrics');
+const { CollaborationHub } = require('./src/collaboration');
 
 function createRedis(url) {
   if (!url) return null;
@@ -29,6 +30,7 @@ async function start({ migrateOnStart = true } = {}) {
     if (applied.length) console.log(`Applied migrations: ${applied.join(', ')}`);
   }
   const redis = createRedis(config.redisUrl);
+  const auth = new AuthService(pool, config);
 
   // Error reporting is opt-in: nothing is loaded or sent without a DSN.
   let captureError = null;
@@ -42,12 +44,31 @@ async function start({ migrateOnStart = true } = {}) {
   const app = await buildApp({
     config,
     store: new DocumentStore(pool),
-    auth: new AuthService(pool, config),
+    auth,
     redis,
     metrics: config.metricsEnabled ? createMetrics({ pool }) : null,
     captureError,
   });
+  const collaboration = new CollaborationHub({ store: new DocumentStore(pool), logger: app.log });
+  const WebSocket = require('ws');
+  const websocketServer = new WebSocket.Server({ noServer: true });
+  app.server.on('upgrade', async (request, socket, head) => {
+    const match = request.url?.match(/^\/ws\/documents\/([^/?]+)$/);
+    if (!match) return;
+    const token = (request.headers.cookie || '')
+      .split(';')
+      .map((part) => part.trim())
+      .find((part) => part.startsWith('sid='))
+      ?.slice(4);
+    const user = token ? await auth.resolve(token).catch(() => null) : null;
+    if (!user) return socket.destroy();
+    websocketServer.handleUpgrade(request, socket, head, (client) => {
+      collaboration.open(user.id, decodeURIComponent(match[1]), client).catch(() => client.close());
+    });
+  });
   app.addHook('onClose', async () => {
+    await collaboration.close();
+    websocketServer.close();
     await pool.end().catch(() => undefined);
     redis?.disconnect();
   });

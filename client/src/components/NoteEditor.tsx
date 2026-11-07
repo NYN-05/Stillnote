@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import type { Editor } from '@tiptap/core';
-import { AlertTriangle, Copy, Eraser, FileCode2, FileText, MoreHorizontal, Pin, PinOff, Printer, RefreshCw, Trash2 } from 'lucide-react';
+import { Copy, Eraser, FileCode2, FileText, MoreHorizontal, Pin, PinOff, Printer, RefreshCw, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/alert-dialog';
 import {
@@ -15,7 +15,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tip } from '@/components/ui/tooltip';
 import { EditorToolbar } from '@/components/EditorToolbar';
-import { RichTextEditor } from '@/components/RichTextEditor';
+import { CollaborativeRichTextEditor } from '@/components/CollaborativeRichTextEditor';
 import { useActiveNote, useEngine, useEngineState } from '@/hooks/engine';
 import { DEFAULT_NOTE_TITLE, MAX_TITLE_LENGTH } from '@/lib/model';
 import { copyRichText, downloadHtml, htmlToPlainText, printRichText } from '@/lib/richText';
@@ -35,7 +35,6 @@ export function NoteEditor() {
   const navigate = useNavigate();
   const note = useActiveNote();
   const contentErrorId = useEngineState((state) => state.contentErrorId);
-  const conflict = useEngineState((state) => state.conflict);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [confirm, setConfirm] = useState<'clear' | 'delete' | null>(null);
 
@@ -48,10 +47,14 @@ export function NoteEditor() {
   const noteId = note?.id;
   const handleChange = useCallback(
     (value: string) => {
-      if (noteId) engine.edit(noteId, { content: value });
+      if (noteId) engine.editCollaborativeContent(noteId, value);
     },
     [engine, noteId],
   );
+
+  useEffect(() => {
+    if (noteId) engine.enableCollaboration(noteId);
+  }, [engine, noteId]);
 
   // Leaving the editor (settings, sign-out, route change) ends the edit burst.
   useEffect(() => () => void engine.flush(), [engine]);
@@ -59,7 +62,6 @@ export function NoteEditor() {
   if (!note) return null;
   const pending = note.content === null;
   const loadFailed = pending && contentErrorId === note.id;
-  const isConflict = conflict?.noteId === note.id;
 
   const filename = sanitizeFilename(note.title);
   const exportAs = (kind: 'html' | 'txt') => {
@@ -143,29 +145,6 @@ export function NoteEditor() {
 
       <div id="note-body" className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl px-5 pb-10 pt-6 sm:px-8">
-          {isConflict && (
-            <div
-              role="alert"
-              className="mb-6 flex flex-col gap-3 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm sm:flex-row sm:items-center"
-            >
-              <AlertTriangle className="size-4 shrink-0 text-warning" aria-hidden="true" />
-              <div className="min-w-0 flex-1">
-                <p className="font-medium text-foreground">This note changed in another session.</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  Your text on this screen is safe, and autosave is paused. Reload the other version, or keep yours and replace it.
-                </p>
-              </div>
-              <div className="flex shrink-0 gap-2">
-                <Button variant="outline" size="sm" onClick={() => void engine.reloadConflict(note.id)}>
-                  Reload latest
-                </Button>
-                <Button variant="primary" size="sm" onClick={() => void engine.keepLocalConflict(note.id)}>
-                  Keep my text
-                </Button>
-              </div>
-            </div>
-          )}
-
           {loadFailed ? (
             <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-muted px-4 py-3 text-sm">
               <span className="text-muted-foreground">This note could not be downloaded.</span>
@@ -176,8 +155,9 @@ export function NoteEditor() {
           ) : pending ? (
             <EditorFallback />
           ) : (
-            <RichTextEditor
+            <CollaborativeRichTextEditor
               key={note.id}
+              noteId={note.id}
               value={content}
               onChange={handleChange}
               onEditor={setEditor}
@@ -194,7 +174,6 @@ export function NoteEditor() {
         </span>
         <span className="hidden sm:inline">{characters.toLocaleString()} characters</span>
         <span className="hidden sm:inline">{minutes === 0 ? '0 min read' : `${minutes} min read`}</span>
-        {isConflict && <span className="ml-auto text-warning">Autosave paused</span>}
       </footer>
 
       <ConfirmDialog

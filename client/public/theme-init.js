@@ -4,7 +4,7 @@ try {
   var saved = (JSON.parse(localStorage.getItem('stillnote-ui') || '{}').state || {}).theme || 'system';
   var dark = saved === 'dark' || (saved === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.classList.toggle('dark', dark);
-  document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#09090b' : '#fafafa');
+  document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#450a0a' : '#fef2f2');
 } catch (e) {
   // Theme falls back to the stylesheet default.
 }

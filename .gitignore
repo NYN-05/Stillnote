@@ -93,6 +93,7 @@ Desktop.ini
 .kilo/
 .opencode/
 graphify-out/
+scripts/
 
 # Generated repository inventory, useful locally but not source.
 directory_structure.txt

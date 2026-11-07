@@ -8,6 +8,20 @@ export const CURRENT_SCHEMA_VERSION: number = policy.schemaVersion;
 export const MAX_TITLE_LENGTH: number = policy.maxTitleLength;
 export const DEFAULT_NOTE_TITLE: string = policy.defaultNoteTitle;
 
+/** Generates note IDs in both secure and non-secure local development contexts. */
+export function createId(): string {
+  const browserCrypto = globalThis.crypto;
+  if (typeof browserCrypto?.randomUUID === 'function') return browserCrypto.randomUUID();
+  if (typeof browserCrypto?.getRandomValues === 'function') {
+    const bytes = browserCrypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  throw new Error('Secure browser randomness is unavailable. Use a modern browser to create notes.');
+}
+
 export type ContentFormat = 'html' | 'markdown';
 
 export interface User {
