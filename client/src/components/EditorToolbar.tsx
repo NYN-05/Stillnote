@@ -275,9 +275,13 @@ export function EditorToolbar({ editor, disabled = false }: { editor: Editor; di
   ];
 
   return (
-    <div role="toolbar" aria-label="Formatting" className="flex items-center gap-1 overflow-x-auto px-4 py-1.5 sm:px-8">
+    <div
+      role="toolbar"
+      aria-label="Formatting"
+      className="flex min-h-12 items-center gap-1 overflow-x-auto border-b border-border bg-muted/30 px-5 py-2 sm:px-10"
+    >
       {groups.map((group, index) => (
-        <div key={index} className="flex shrink-0 items-center gap-0.5 border-r border-border pr-1 last:border-r-0">
+        <div key={index} className="flex shrink-0 items-center gap-0.5 border-r border-border/70 pr-2 last:border-r-0">
           {group.map(({ id, label, icon: Icon, shortcut, active, run, disabled: toolDisabled }) => {
             const pressed = active ? snapshot[active] : undefined;
             return (

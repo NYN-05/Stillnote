@@ -70,8 +70,8 @@ export function Sidebar() {
         onClick={closeOnMobile}
         aria-current={note.id === activeId ? 'page' : undefined}
         className={cn(
-          'block rounded-xl border border-transparent px-3 py-2.5 pr-14 transition-colors',
-          note.id === activeId ? 'border-primary/20 bg-accent' : 'hover:bg-muted',
+          'block rounded-lg border border-transparent px-3 py-2.5 pr-14 transition-colors',
+          note.id === activeId ? 'border-primary/20 bg-primary/[0.08] shadow-sm' : 'hover:bg-sidebar-accent',
         )}
       >
         <span className={cn('block truncate text-[13px] font-medium', note.id === activeId ? 'text-accent-foreground' : 'text-foreground')}>
@@ -115,7 +115,11 @@ export function Sidebar() {
   return (
     <aside className="flex h-full w-full flex-col bg-sidebar" aria-label="Notes">
       <div className="space-y-3 p-3">
-        <Button variant="primary" className="w-full justify-start" onClick={createNote}>
+        <Button
+          variant="outline"
+          className="w-full justify-start border-primary/25 bg-card hover:border-primary/45 hover:bg-primary/[0.06]"
+          onClick={createNote}
+        >
           <Plus className="size-4" /> New note <Kbd className="ml-auto border-white/25 bg-white/15 text-primary-foreground">Alt N</Kbd>
         </Button>
         <label className="relative block">
@@ -158,7 +162,7 @@ export function Sidebar() {
         </section>
         {filtered.length === 0 && (
           <div className="px-4 py-10 text-center">
-            <div className="mx-auto flex size-10 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+            <div className="mx-auto flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
               <Search className="size-4" />
             </div>
             <p className="mt-3 text-sm font-medium">No notes found</p>

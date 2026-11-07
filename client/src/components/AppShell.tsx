@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils';
 const CommandPalette = lazy(() => import('@/components/CommandPalette'));
 
 export function Logo({ className = 'size-8' }: { className?: string }) {
-  return <img src="/favicon.svg" alt="" aria-hidden="true" className={className} />;
+  return <img src="/favicon.png" alt="" aria-hidden="true" className={className} />;
 }
 
 const statusCopy = {
@@ -145,7 +145,7 @@ export function AppShell() {
       >
         Skip to note
       </a>
-      <header className="relative z-40 flex h-14 shrink-0 items-center gap-2 border-b border-border bg-card/80 px-3 backdrop-blur-xl sm:px-4">
+      <header className="relative z-40 flex h-16 shrink-0 items-center gap-2 border-b border-border bg-card/90 px-3 backdrop-blur-xl sm:px-5">
         <Tip label={`${sidebarOpen ? 'Hide' : 'Show'} sidebar (${modKey}+\\)`}>
           <Button
             variant="ghost"
@@ -159,7 +159,7 @@ export function AppShell() {
         </Tip>
         <div className="flex items-center gap-2.5">
           <Logo />
-          <span className="text-sm font-semibold tracking-tight">Stillnote</span>
+          <span className="text-[15px] font-semibold tracking-tight">Stillnote</span>
         </div>
 
         <button
@@ -196,10 +196,10 @@ export function AppShell() {
             <button
               type="button"
               aria-label="Close sidebar"
-              className="fixed inset-0 top-14 z-20 animate-fade-in bg-black/50 md:hidden"
+              className="fixed inset-0 top-16 z-20 animate-fade-in bg-black/50 md:hidden"
               onClick={() => setSidebarOpen(false)}
             />
-            <div className="fixed inset-y-0 left-0 top-14 z-30 w-[min(86vw,320px)] animate-slide-in border-r border-border shadow-pop md:static md:z-0 md:w-80 md:shrink-0 md:animate-none md:shadow-none">
+            <div className="fixed inset-y-0 left-0 top-16 z-30 w-[min(86vw,320px)] animate-slide-in border-r border-border shadow-pop md:static md:z-0 md:w-[296px] md:shrink-0 md:animate-none md:shadow-none">
               {ready ? <Sidebar /> : <SidebarSkeleton />}
             </div>
           </>

@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="client/public/favicon.svg" alt="Stillnote logo" width="92" />
+  <img src="client/public/favicon.png" alt="Stillnote logo" width="92" />
   <h1>Stillnote</h1>
   <p><strong>A quieter place to think.</strong></p>
   <p>Offline-first notes with a calm editor, reliable sync, and zero distractions.</p>

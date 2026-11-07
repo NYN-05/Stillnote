@@ -84,7 +84,7 @@ export function NoteEditor() {
 
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-background" aria-label="Note editor">
-      <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-4 sm:px-8">
+      <div className="flex h-16 shrink-0 items-center gap-2 border-b border-border px-5 sm:px-10">
         <input
           aria-label="Note title"
           value={note.title}
@@ -144,7 +144,7 @@ export function NoteEditor() {
       {editor && !pending && <EditorToolbar editor={editor} />}
 
       <div id="note-body" className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-3xl px-5 pb-10 pt-6 sm:px-8">
+        <div className="mx-auto w-full max-w-4xl px-6 pb-14 pt-10 sm:px-12 lg:px-16">
           {loadFailed ? (
             <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-muted px-4 py-3 text-sm">
               <span className="text-muted-foreground">This note could not be downloaded.</span>

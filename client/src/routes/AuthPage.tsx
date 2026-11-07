@@ -39,7 +39,7 @@ export default function AuthPage() {
           </div>
         </div>
 
-        <form onSubmit={onSubmit} className="rounded-2xl border border-border bg-card p-6 shadow-pop" noValidate>
+        <form onSubmit={onSubmit} className="rounded-xl border border-border bg-card p-6 shadow-pop" noValidate>
           <h1 className="text-lg font-semibold tracking-tight">{creating ? 'Create your account' : 'Welcome back'}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {creating ? 'Your notes stay private to your account.' : 'Sign in to open your notes.'}

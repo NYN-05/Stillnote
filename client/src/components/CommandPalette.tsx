@@ -50,7 +50,7 @@ export default function CommandPalette() {
       onOpenChange={ui.setPaletteOpen}
       label="Command palette"
       overlayClassName="fixed inset-0 z-[60] animate-fade-in bg-black/50 backdrop-blur-[2px]"
-      contentClassName="fixed left-1/2 top-[14vh] z-[61] w-[calc(100vw-2rem)] max-w-xl -translate-x-1/2 animate-pop-in overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-pop"
+      contentClassName="fixed left-1/2 top-[14vh] z-[61] w-[calc(100vw-2rem)] max-w-xl -translate-x-1/2 animate-pop-in overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-pop"
       // Notes match on title and preview; actions on their label.
       filter={(value, search, keywords) =>
         (keywords?.length ? keywords.join(' ') : value).toLowerCase().includes(search.trim().toLowerCase()) ? 1 : 0

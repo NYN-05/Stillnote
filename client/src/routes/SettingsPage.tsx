@@ -22,7 +22,7 @@ const shortcuts: [string, string[]][] = [
 
 function Section({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-2xl border border-border bg-card p-5 sm:p-6">
+    <section className="rounded-xl border border-border bg-card p-5 sm:p-6">
       <h2 className="text-base font-semibold tracking-tight">{title}</h2>
       {description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}
       <div className="mt-5">{children}</div>
@@ -77,7 +77,7 @@ export default function SettingsPage() {
                 onClick={() => setTheme(value)}
                 className={cn(
                   'flex flex-col items-center gap-2 rounded-xl border px-3 py-4 text-sm transition-colors',
-                  theme === value ? 'border-primary bg-accent text-accent-foreground' : 'border-border hover:bg-muted',
+                  theme === value ? 'border-primary/50 bg-primary/[0.08] text-foreground shadow-sm' : 'border-border hover:bg-muted',
                 )}
               >
                 <Icon className="size-5" aria-hidden="true" /> {label}
