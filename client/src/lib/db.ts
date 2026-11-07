@@ -1,5 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
-import type { Note } from './types';
+import { CURRENT_SCHEMA_VERSION, type Note } from './model';
 
 export interface LocalMeta {
   activeId: string | null;
@@ -11,7 +11,7 @@ export interface LocalSnapshot extends LocalMeta {
   notes: Note[];
 }
 
-/** Where the sync engine keeps its offline copy. Implemented by IndexedDB and, in tests, by memory. */
+/** Where the sync engine keeps its offline copy. */
 export interface LocalStore {
   load(): Promise<LocalSnapshot>;
   putNote(note: Note): Promise<void>;
@@ -25,17 +25,27 @@ interface StillnoteDB extends DBSchema {
   meta: { key: string; value: unknown };
 }
 
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 // One database per account, so signing in as someone else never shows their notes.
 export async function openLocalStore(userId: string): Promise<LocalStore> {
   const db = await openDB<StillnoteDB>(`stillnote-${userId}`, DB_VERSION, {
-    upgrade(database) {
-      database.createObjectStore('notes', { keyPath: 'id' });
-      database.createObjectStore('meta');
+    upgrade(database, oldVersion) {
+      // Version 2 only migrates note content, which happens after the database opens.
+      if (oldVersion < 1) {
+        database.createObjectStore('notes', { keyPath: 'id' });
+        database.createObjectStore('meta');
+      }
     },
   });
   await importFromLocalStorage(db, userId);
+  try {
+    await migrateLocalNotes(db);
+  } catch (error) {
+    // Never make the app unusable because a one-time local upgrade failed. Notes stay
+    // intact and the server converts any Markdown they are uploaded with.
+    console.warn('Stillnote could not upgrade its local notes yet:', error);
+  }
 
   return {
     async load() {
@@ -64,27 +74,6 @@ export async function openLocalStore(userId: string): Promise<LocalStore> {
   };
 }
 
-export function createMemoryStore(initial: Partial<LocalSnapshot> = {}): LocalStore & { snapshot(): LocalSnapshot } {
-  const notes = new Map((initial.notes ?? []).map((note) => [note.id, note]));
-  let meta: LocalMeta = { activeId: initial.activeId ?? null, tombstones: initial.tombstones ?? {} };
-  return {
-    async load() {
-      return { notes: [...notes.values()], ...meta };
-    },
-    async putNote(note) {
-      notes.set(note.id, note);
-    },
-    async deleteNote(id) {
-      notes.delete(id);
-    },
-    async saveMeta(next) {
-      meta = { activeId: next.activeId, tombstones: { ...next.tombstones } };
-    },
-    close() {},
-    snapshot: () => ({ notes: [...notes.values()], ...meta }),
-  };
-}
-
 // Earlier versions kept everything in one localStorage entry. Move it across once.
 async function importFromLocalStorage(db: IDBPDatabase<StillnoteDB>, userId: string) {
   if (typeof localStorage === 'undefined') return;
@@ -108,6 +97,48 @@ async function importFromLocalStorage(db: IDBPDatabase<StillnoteDB>, userId: str
   } catch (error) {
     console.warn('Stillnote could not import its old local cache:', error);
   }
+}
+
+/**
+ * Upgrades notes written by the old Markdown editor in place, without clearing
+ * the database or changing IDs, timestamps or versions. The marker is written
+ * only after every convertible note has been saved, so an interrupted upgrade
+ * is retried on the next start.
+ */
+async function migrateLocalNotes(db: IDBPDatabase<StillnoteDB>) {
+  const marker = await db.get('meta', 'contentMigrationVersion');
+  if (typeof marker === 'number' && marker >= CURRENT_SCHEMA_VERSION) return;
+
+  const notes = await db.getAll('notes');
+  const needsUpgrade = notes.filter(
+    (note) => note.content !== null && !(note.contentFormat === 'html' && note.contentSchemaVersion === CURRENT_SCHEMA_VERSION),
+  );
+
+  if (needsUpgrade.length > 0) {
+    // Loaded only when an old note is actually present, keeping the normal bundle small.
+    const { markdownToHtml, sanitizeRichHtml, htmlToPlainText, escapeHtml } = await import('./richText');
+    const tx = db.transaction(['notes', 'meta'], 'readwrite');
+    for (const note of needsUpgrade) {
+      const source = note.content ?? '';
+      let html: string;
+      try {
+        html = note.contentFormat === 'html' ? sanitizeRichHtml(source) : markdownToHtml(source);
+      } catch {
+        // Last resort: keep every character, even if formatting cannot be parsed.
+        html = source ? `<p>${escapeHtml(source).replace(/\n/g, '<br />')}</p>` : '';
+      }
+      tx.objectStore('notes').put({
+        ...note,
+        content: html,
+        contentFormat: 'html',
+        contentSchemaVersion: CURRENT_SCHEMA_VERSION,
+        snippet: htmlToPlainText(html).slice(0, 200),
+      });
+    }
+    await tx.done;
+  }
+
+  await db.put('meta', CURRENT_SCHEMA_VERSION, 'contentMigrationVersion');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -16,7 +16,7 @@ export default defineConfig({
       manifest: {
         name: 'Stillnote',
         short_name: 'Stillnote',
-        description: 'A quiet, Markdown-first place to write.',
+        description: 'A quiet, offline-first place to write.',
         theme_color: '#7c5cf0',
         background_color: '#0b0b0e',
         display: 'standalone',
@@ -56,7 +56,7 @@ export default defineConfig({
           if (!id.includes('node_modules')) return undefined;
           if (/node_modules\/(react|react-dom|scheduler|react-router|react-router-dom)\//.test(id)) return 'react';
           if (/node_modules\/(@radix-ui|cmdk|sonner|lucide-react|class-variance-authority)\//.test(id)) return 'ui';
-          return undefined; // CodeMirror and the Markdown renderer stay in their lazy chunks
+          return undefined; // Everything else stays in the chunk that imports it.
         },
       },
     },

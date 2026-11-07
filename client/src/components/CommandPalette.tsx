@@ -2,11 +2,12 @@ import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Command } from 'cmdk';
 import { toast } from 'sonner';
-import { Columns2, Download, Eye, FilePlus2, FileText, LogOut, Monitor, Moon, PanelLeft, Pencil, Settings, Sun, Type } from 'lucide-react';
+import { Download, FilePlus2, FileText, LogOut, PanelLeft, Settings } from 'lucide-react';
 import { useEngine, useEngineState } from '@/hooks/engine';
 import { useSignOut } from '@/hooks/session';
-import { useUi } from '@/lib/ui-store';
-import { downloadText, previewText, sanitizeFilename } from '@/lib/utils';
+import { downloadHtml, htmlToPlainText, previewText } from '@/lib/richText';
+import { THEMES, useUi } from '@/lib/ui-store';
+import { downloadText, sanitizeFilename } from '@/lib/utils';
 
 const itemClass =
   'flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-foreground outline-none data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground';
@@ -34,7 +35,13 @@ export default function CommandPalette() {
   const exportActive = () => {
     const note = engine.activeNote;
     if (!note || note.content === null) return toast('Open the note first so its text is available');
-    downloadText(`${sanitizeFilename(note.title)}.md`, note.content, 'text/markdown');
+    downloadHtml(`${sanitizeFilename(note.title)}.html`, note.title, note.content);
+  };
+
+  const exportActiveText = () => {
+    const note = engine.activeNote;
+    if (!note || note.content === null) return toast('Open the note first so its text is available');
+    downloadText(`${sanitizeFilename(note.title)}.txt`, htmlToPlainText(note.content), 'text/plain');
   };
 
   return (
@@ -66,20 +73,22 @@ export default function CommandPalette() {
               navigate(`/notes/${note.id}`);
             }}
           />
-          <Action icon={<Pencil />} label="Write mode" onSelect={() => ui.setViewMode('write')} />
-          <Action icon={<Columns2 />} label="Split view" onSelect={() => ui.setViewMode('split')} />
-          <Action icon={<Eye />} label="Preview mode" onSelect={() => ui.setViewMode('preview')} />
-          <Action icon={<Type />} label="Toggle monospace font" onSelect={() => ui.setMonospace(!ui.monospace)} />
           <Action icon={<PanelLeft />} label="Toggle sidebar" onSelect={() => ui.setSidebarOpen(!ui.sidebarOpen)} />
           <Action
             icon={<Download />}
-            label="Download current note as Markdown"
-            keywords={['export', 'download', 'markdown']}
+            label="Download current note as HTML"
+            keywords={['export', 'download', 'html']}
             onSelect={exportActive}
           />
-          <Action icon={<Sun />} label="Light theme" onSelect={() => ui.setTheme('light')} />
-          <Action icon={<Moon />} label="Dark theme" onSelect={() => ui.setTheme('dark')} />
-          <Action icon={<Monitor />} label="System theme" onSelect={() => ui.setTheme('system')} />
+          <Action
+            icon={<FileText />}
+            label="Download current note as text"
+            keywords={['export', 'download', 'txt', 'plain text']}
+            onSelect={exportActiveText}
+          />
+          {THEMES.map(({ value, label, icon: Icon }) => (
+            <Action key={value} icon={<Icon />} label={`${label} theme`} onSelect={() => ui.setTheme(value)} />
+          ))}
           <Action icon={<Settings />} label="Settings" onSelect={() => navigate('/settings')} />
           <Action icon={<LogOut />} label="Sign out" onSelect={() => signOut.mutate()} />
         </Command.Group>

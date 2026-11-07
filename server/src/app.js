@@ -1,6 +1,6 @@
 const { randomUUID } = require('node:crypto');
 const Fastify = require('fastify');
-const { StoreError } = require('./documentStore');
+const { StoreError } = require('./storeError');
 
 const SESSION_COOKIE = 'sid';
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -222,4 +222,4 @@ async function buildApp({ config, store, auth, redis = null, logger, metrics = n
   return app;
 }
 
-module.exports = { buildApp, SESSION_COOKIE };
+module.exports = { buildApp };

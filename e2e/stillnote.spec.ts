@@ -11,8 +11,19 @@ interface Fixtures {
   account: { page: Page; email: string };
 }
 
-export const test = base.extend<Fixtures>({
-  guarded: async ({ page }, use) => {
+interface Options {
+  /**
+   * The XSS test deliberately pastes inline event handlers. The browser logs a
+   * CSP violation before the paste sanitizer removes them; that block is the
+   * expected defence, not an application error.
+   */
+  allowBlockedInlineHandlers: boolean;
+}
+
+export const test = base.extend<Fixtures & Options>({
+  allowBlockedInlineHandlers: [false, { option: true }],
+
+  guarded: async ({ page, allowBlockedInlineHandlers }, use) => {
     const problems: string[] = [];
     await page.addInitScript(() => {
       document.addEventListener('securitypolicyviolation', (event) => {
@@ -25,6 +36,13 @@ export const test = base.extend<Fixtures>({
       const text = message.text();
       // Expected while signed out or offline; everything else is a bug.
       if (/status of (401|400|409)|ERR_INTERNET_DISCONNECTED|Failed to fetch/.test(text)) return;
+      if (
+        allowBlockedInlineHandlers &&
+        (/Executing inline event handler violates the following Content Security Policy/.test(text) ||
+          /CSP violation: script-src-attr blocked inline/.test(text))
+      ) {
+        return;
+      }
       problems.push(`console.error: ${text}`);
     });
     await use(page);
@@ -46,12 +64,21 @@ async function register(page: Page, email: string) {
   await page.fill('#auth-password', PASSWORD);
   await page.getByRole('button', { name: 'Create account' }).click();
   await page.waitForURL('**/notes/**');
-  await page.locator('.cm-content').waitFor();
+  await editorText(page).waitFor();
 }
 
 const status = (page: Page) => page.getByRole('status').first();
-const editorText = (page: Page) => page.locator('.cm-content');
+const editorText = (page: Page) => page.locator('.rich-text');
 const waitSaved = (page: Page) => expect(status(page)).toContainText('Saved', { timeout: 12_000 });
+
+async function storedNote(page: Page, id: string) {
+  return page.evaluate(async (noteId) => {
+    const response = await fetch(`/api/documents/${noteId}`);
+    return (await response.json()) as {
+      document: { content: string; contentFormat: string; contentSchemaVersion: number; version: number };
+    };
+  }, id);
+}
 
 test.describe('accounts', () => {
   test('validation, sign-up, sign-out and sign-in', async ({ guarded: page }) => {
@@ -100,47 +127,119 @@ test.describe('accounts', () => {
 });
 
 test.describe('writing', () => {
-  test('formatting commands, split preview and persistence across reload', async ({ account }) => {
+  test('formatting commands, undo and rich HTML persistence across reload', async ({ account }) => {
     const { page } = account;
-    await editorText(page).click();
-    await page.keyboard.type('# Plan');
-    await page.keyboard.press('Enter');
+    const editor = editorText(page);
+
+    await editor.click();
+    await page.keyboard.type('# ');
+    await expect(editor.locator('h1')).toHaveCount(1);
+    await page.keyboard.type('Plan');
     await page.keyboard.press('Enter');
     await page.keyboard.type('keep it simple');
     await page.keyboard.press('Shift+Home'); // select just this line
+
     await page.getByRole('button', { name: 'Bold' }).click();
-    await expect(editorText(page)).toContainText('**keep it simple**');
-    await page.keyboard.press('Control+B');
-    await expect(editorText(page)).not.toContainText('**');
+    await expect(editor.locator('strong')).toHaveText('keep it simple');
+    await expect(page.getByRole('button', { name: 'Bold' })).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('Control+b');
+    await expect(editor.locator('strong')).toHaveCount(0);
+    await page.keyboard.press('Control+b');
+    await expect(editor.locator('strong')).toHaveText('keep it simple');
+
+    // Undo and redo operate on the document, not on Markdown text.
+    await page.keyboard.press('Control+End');
+    await page.keyboard.type(' xyzzy');
+    await expect(editor).toContainText('xyzzy');
+    await page.getByRole('button', { name: 'Undo' }).click();
+    await expect(editor).not.toContainText('xyzzy');
+    await page.getByRole('button', { name: 'Redo' }).click();
+    await expect(editor).toContainText('xyzzy');
+
+    // Alignment is stored as a CSS property the shared policy allows.
+    await editor.locator('h1').click();
+    await page.getByRole('button', { name: 'Align center' }).click();
+    await expect(editor.locator('h1')).toHaveCSS('text-align', 'center');
 
     await page.keyboard.press('Control+End');
     await page.keyboard.press('Enter');
-    await page.keyboard.press('Enter');
     await page.getByRole('button', { name: 'Bulleted list' }).click();
     await page.keyboard.type('first item');
-    await expect(editorText(page)).toContainText('- first item');
-
-    await page.getByRole('button', { name: 'Split' }).click();
-    await expect(page.locator('.markdown-preview h1')).toHaveText('Plan');
-    await expect(page.locator('.markdown-preview li')).toHaveText('first item');
-    await page.getByRole('button', { name: 'Preview' }).click();
-    await expect(page.locator('.cm-content')).toHaveCount(0);
-    await page.getByRole('button', { name: 'Write' }).click();
+    await expect(editor.locator('ul li')).toContainText('first item');
 
     await waitSaved(page);
+    const id = page.url().split('/notes/')[1];
+    const saved = await storedNote(page, id);
+    expect(saved.document.contentFormat).toBe('html');
+    expect(saved.document.contentSchemaVersion).toBe(1);
+    expect(saved.document.content).toMatch(/<h1 style="text-align:\s*center">Plan<\/h1>/);
+    expect(saved.document.content).toMatch(/<strong>keep it simple/);
+    expect(saved.document.content).toContain('<ul>');
+
     await page.reload();
-    await expect(editorText(page)).toContainText('# Plan');
-    await expect(editorText(page)).toContainText('- first item');
+    await expect(editorText(page).locator('h1')).toHaveText('Plan');
+    await expect(editorText(page).locator('h1')).toHaveCSS('text-align', 'center');
+    await expect(editorText(page).locator('strong')).toContainText('keep it simple');
+    await expect(editorText(page).locator('ul li')).toContainText('first item');
   });
 
-  test('raw HTML and script URLs in a note are not executed', async ({ account }) => {
+  test('autosave confirmations do not move the caret or replace the text', async ({ account }) => {
     const { page } = account;
-    await editorText(page).click();
-    await page.keyboard.type('<img src=x onerror="window.__pwned=1"> [click](javascript:window.__pwned=2)');
-    await page.getByRole('button', { name: 'Preview' }).click();
-    await page.waitForTimeout(300);
-    expect(await page.evaluate(() => (window as unknown as { __pwned?: number }).__pwned)).toBeUndefined();
-    await expect(page.locator('.markdown-preview a[href^="javascript"]')).toHaveCount(0);
+    const editor = editorText(page);
+    await editor.click();
+    await page.keyboard.type('hello world');
+    await page.keyboard.press('Home');
+    for (let index = 0; index < 5; index += 1) await page.keyboard.press('ArrowRight');
+    await waitSaved(page);
+
+    await page.keyboard.type(' there');
+    await expect(editor).toContainText('hello there world');
+  });
+
+  test.describe('pasted HTML', () => {
+    test.use({ allowBlockedInlineHandlers: true });
+
+    test('pasted HTML is sanitized before it reaches the editor or the server', async ({ account }) => {
+      const { page } = account;
+      const editor = editorText(page);
+      const payload = [
+        '<p style="text-align: center; color: red; position: fixed"><strong>safe</strong> text</p>',
+        '<p><img src="x" onerror="window.__pwned=1">',
+        '<a href="javascript:window.__pwned=2" onclick="window.__pwned=3">bad link</a></p>',
+        '<script>window.__pwned=4</script>',
+        '<table><thead><tr><th>Head</th></tr></thead><tbody><tr><td>Cell</td></tr></tbody></table>',
+      ].join('');
+
+      await editor.click();
+      await page.evaluate((html) => {
+        const target = document.querySelector<HTMLElement>('.rich-text');
+        if (!target) throw new Error('editor not found');
+        target.focus();
+        const data = new DataTransfer();
+        data.setData('text/html', html);
+        data.setData('text/plain', 'safe text bad link');
+        target.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
+      }, payload);
+
+      await expect(editor.locator('strong')).toHaveText('safe');
+      await expect(editor.locator('table th')).toHaveText('Head');
+      await expect(editor.locator('table td')).toHaveText('Cell');
+      expect(await page.evaluate(() => (window as unknown as { __pwned?: number }).__pwned)).toBeUndefined();
+
+      const live = await editor.innerHTML();
+      expect(live).not.toMatch(/onerror|javascript:|<script|position:|color:/i);
+
+      await waitSaved(page);
+      const id = page.url().split('/notes/')[1];
+      const saved = await storedNote(page, id);
+      expect(saved.document.content).toContain('<strong>safe</strong>');
+      expect(saved.document.content).toMatch(/<table[ >]/);
+      expect(saved.document.content).not.toMatch(/onerror|javascript:|<script|position:|color:/i);
+
+      await page.reload();
+      await expect(editorText(page).locator('strong')).toHaveText('safe');
+      await expect(editorText(page).locator('table th')).toHaveText('Head');
+    });
   });
 });
 
@@ -161,9 +260,53 @@ test.describe('links', () => {
     const secondPage = await second.newPage();
     await secondPage.goto(noteUrl);
     await expect(secondPage.getByLabel('Note title')).toHaveValue('Shared plan');
-    await expect(secondPage.locator('.cm-content')).toContainText('reachable by link');
+    await expect(secondPage.locator('.rich-text')).toContainText('reachable by link');
     expect(secondPage.url()).toBe(noteUrl);
     await second.close();
+  });
+});
+
+test.describe('conflicts', () => {
+  test('a conflicting save keeps the open note’s text until the user chooses', async ({ account }) => {
+    const { page } = account;
+    const editor = editorText(page);
+    await editor.click();
+    await page.keyboard.type('mine');
+    await waitSaved(page);
+    const id = page.url().split('/notes/')[1];
+
+    // Another session saves the note after this device last saw it.
+    const current = await storedNote(page, id);
+    const response = await page.evaluate(
+      async ({ noteId, version }) => {
+        const result = await fetch(`/api/documents/${noteId}`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            content: '<p>theirs</p>',
+            contentFormat: 'html',
+            contentSchemaVersion: 1,
+            version,
+            updatedAt: new Date().toISOString(),
+          }),
+        });
+        return result.status;
+      },
+      { noteId: id, version: current.document.version },
+    );
+    expect(response).toBe(200);
+
+    await editor.click();
+    await page.keyboard.press('Control+End');
+    await page.keyboard.type(' plus mine');
+    await expect(page.getByRole('alert')).toContainText('changed in another session');
+    await expect(editor).toContainText('mine plus mine');
+    expect((await storedNote(page, id)).document.content).toContain('theirs');
+
+    await page.getByRole('button', { name: 'Reload latest' }).click();
+    await expect(editor).toContainText('theirs');
+    await expect(editor).not.toContainText('mine plus mine');
+    await expect(page.getByRole('alert')).toHaveCount(0);
   });
 });
 
@@ -210,8 +353,9 @@ test.describe('offline', () => {
     await waitSaved(page);
 
     const id = page.url().split('/notes/')[1];
-    const content = await page.evaluate((noteId) => fetch(`/api/documents/${noteId}`).then((r) => r.json()), id);
-    expect(content.document.content).toBe('online text plus offline text');
+    const saved = await storedNote(page, id);
+    expect(saved.document.content).toContain('<p>');
+    expect(saved.document.content).toContain('online text plus offline text');
   });
 });
 

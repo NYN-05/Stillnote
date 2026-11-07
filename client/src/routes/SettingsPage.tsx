@@ -1,20 +1,14 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
-import { ArrowLeft, Download, LogOut, Monitor, Moon, Sun } from 'lucide-react';
+import { ArrowLeft, Download, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Kbd, modKey } from '@/components/ui/kbd';
 import { useSession, useSignOut } from '@/hooks/session';
 import { useEngineState } from '@/hooks/engine';
 import { notesApi } from '@/lib/api';
-import { useUi, type Theme } from '@/lib/ui-store';
+import { THEMES, useUi } from '@/lib/ui-store';
 import { cn, downloadText } from '@/lib/utils';
-
-const themes: { value: Theme; label: string; icon: typeof Sun }[] = [
-  { value: 'light', label: 'Light', icon: Sun },
-  { value: 'dark', label: 'Dark', icon: Moon },
-  { value: 'system', label: 'System', icon: Monitor },
-];
 
 const shortcuts: [string, string[]][] = [
   ['Command palette', [modKey, 'K']],
@@ -22,6 +16,7 @@ const shortcuts: [string, string[]][] = [
   ['Save now', [modKey, 'S']],
   ['Bold', [modKey, 'B']],
   ['Italic', [modKey, 'I']],
+  ['Underline', [modKey, 'U']],
   ['Toggle sidebar', [modKey, '\\']],
 ];
 
@@ -38,7 +33,7 @@ function Section({ title, description, children }: { title: string; description?
 export default function SettingsPage() {
   const { data: user } = useSession();
   const signOut = useSignOut();
-  const { theme, setTheme, monospace, setMonospace } = useUi();
+  const { theme, setTheme } = useUi();
   const noteCount = useEngineState((state) => state.notes.length);
   const [exporting, setExporting] = useState(false);
 
@@ -47,8 +42,7 @@ export default function SettingsPage() {
     setExporting(true);
     try {
       const summaries = await notesApi.list();
-      const notes = [];
-      for (const summary of summaries) notes.push(await notesApi.get(summary.id));
+      const notes = await Promise.all(summaries.map((summary) => notesApi.get(summary.id)));
       downloadText(
         `stillnote-export-${new Date().toISOString().slice(0, 10)}.json`,
         JSON.stringify({ exportedAt: new Date().toISOString(), notes }, null, 2),
@@ -74,7 +68,7 @@ export default function SettingsPage() {
 
         <Section title="Appearance">
           <div role="radiogroup" aria-label="Theme" className="grid grid-cols-3 gap-2">
-            {themes.map(({ value, label, icon: Icon }) => (
+            {THEMES.map(({ value, label, icon: Icon }) => (
               <button
                 key={value}
                 type="button"
@@ -90,19 +84,6 @@ export default function SettingsPage() {
               </button>
             ))}
           </div>
-          <label className="mt-5 flex cursor-pointer items-center justify-between gap-4">
-            <span>
-              <span className="block text-sm font-medium">Monospace editor font</span>
-              <span className="block text-xs text-muted-foreground">Use a fixed-width font while writing and in the preview.</span>
-            </span>
-            <input
-              type="checkbox"
-              role="switch"
-              checked={monospace}
-              onChange={(event) => setMonospace(event.target.checked)}
-              className="size-5 accent-primary"
-            />
-          </label>
         </Section>
 
         <Section title="Account" description={user?.email}>

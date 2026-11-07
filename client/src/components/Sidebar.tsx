@@ -8,9 +8,10 @@ import { Kbd } from '@/components/ui/kbd';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tip } from '@/components/ui/tooltip';
 import { useEngine, useEngineState } from '@/hooks/engine';
-import type { Note } from '@/lib/types';
+import type { Note } from '@/lib/model';
+import { htmlToPlainText, previewText } from '@/lib/richText';
 import { useUi } from '@/lib/ui-store';
-import { cn, formatNoteDate, previewText } from '@/lib/utils';
+import { cn, formatNoteDate } from '@/lib/utils';
 
 const PAGE = 100;
 
@@ -24,13 +25,23 @@ export function Sidebar() {
   const [limit, setLimit] = useState(PAGE);
   const [toDelete, setToDelete] = useState<Note | null>(null);
 
+  const noteIndex = useMemo(() => {
+    const index = new Map<string, { note: Note; preview: string; searchText: string }>();
+    for (const note of notes) {
+      const preview = previewText(note.content, note.snippet);
+      index.set(note.id, {
+        note,
+        preview,
+        searchText: `${note.title} ${htmlToPlainText(note.content ?? note.snippet ?? '')}`.toLowerCase(),
+      });
+    }
+    return index;
+  }, [notes]);
+
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return notes;
-    return notes.filter(
-      (note) => note.title.toLowerCase().includes(needle) || (note.content ?? note.snippet ?? '').toLowerCase().includes(needle),
-    );
-  }, [notes, query]);
+    return [...noteIndex.values()].filter(({ searchText }) => !needle || searchText.includes(needle)).map(({ note }) => note);
+  }, [noteIndex, query]);
 
   const visible = filtered.slice(0, limit);
   const pinned = visible.filter((note) => note.pinned);
@@ -66,9 +77,7 @@ export function Sidebar() {
         <span className={cn('block truncate text-[13px] font-medium', note.id === activeId ? 'text-accent-foreground' : 'text-foreground')}>
           {note.title || 'Untitled note'}
         </span>
-        <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-          {previewText(note.content, note.snippet) || 'No text yet'}
-        </span>
+        <span className="mt-0.5 block truncate text-xs text-muted-foreground">{noteIndex.get(note.id)?.preview || 'No text yet'}</span>
         <span className="mt-1 block text-[11px] text-muted-foreground">{formatNoteDate(note.updatedAt)}</span>
       </Link>
       <div className="absolute right-1.5 top-1.5 flex opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">

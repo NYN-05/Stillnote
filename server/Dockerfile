@@ -12,6 +12,7 @@ ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY server ./server
+COPY shared ./shared
 # The unprivileged "node" user ships with the base image.
 USER node
 EXPOSE 4000

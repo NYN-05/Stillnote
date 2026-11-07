@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect } from 'react';
+import { Component, Suspense, lazy, useEffect, type ErrorInfo, type ReactNode } from 'react';
 import { Link, Navigate, RouterProvider, createBrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { Toaster, toast } from 'sonner';
@@ -6,7 +6,6 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { AppShell } from '@/components/AppShell';
-import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { EngineProvider } from '@/hooks/engine';
 import { expireSession, useSession } from '@/hooks/session';
 import { setUnauthorizedHandler } from '@/lib/api';
@@ -17,6 +16,32 @@ import NotesPage from '@/routes/NotesPage';
 const SettingsPage = lazy(() => import('@/routes/SettingsPage'));
 
 const queryClient = new QueryClient();
+
+/** Last line of defence: a rendering bug shows a recovery screen instead of a blank page. */
+class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('Stillnote crashed:', error, info.componentStack);
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div role="alert" className="flex min-h-dvh flex-col items-center justify-center gap-3 px-6 text-center">
+        <h1 className="text-xl font-semibold tracking-tight">Something went wrong</h1>
+        <p className="max-w-sm text-sm text-muted-foreground">Your notes are saved on this device. Reload to pick up where you left off.</p>
+        <Button variant="primary" onClick={() => window.location.reload()}>
+          Reload Stillnote
+        </Button>
+      </div>
+    );
+  }
+}
 
 function Splash() {
   return (

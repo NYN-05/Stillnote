@@ -53,4 +53,4 @@ async function migrate(pool, directory = MIGRATIONS_DIR) {
   return applied;
 }
 
-module.exports = { createPool, migrate, DEFAULT_DATABASE_URL };
+module.exports = { createPool, migrate };

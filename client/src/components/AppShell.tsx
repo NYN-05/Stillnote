@@ -1,20 +1,106 @@
 import { Suspense, lazy, useEffect } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
+import { AlertCircle, Check, CloudOff, LoaderCircle, LogOut, PanelLeftClose, PanelLeftOpen, Search, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Kbd, modKey } from '@/components/ui/kbd';
 import { Tip } from '@/components/ui/tooltip';
 import { Sidebar, SidebarSkeleton } from '@/components/Sidebar';
-import { SyncStatus } from '@/components/SyncStatus';
-import { ThemeMenu, UserMenu } from '@/components/HeaderMenus';
 import { useEngine, useEngineState } from '@/hooks/engine';
-import { useUi } from '@/lib/ui-store';
+import { useSession, useSignOut } from '@/hooks/session';
+import { THEMES, useUi } from '@/lib/ui-store';
+import { cn } from '@/lib/utils';
 
 const CommandPalette = lazy(() => import('@/components/CommandPalette'));
 
 export function Logo({ className = 'size-8' }: { className?: string }) {
   return <img src="/favicon.svg" alt="" aria-hidden="true" className={className} />;
+}
+
+const statusCopy = {
+  saving: { label: 'Saving…', icon: LoaderCircle, tone: 'text-muted-foreground', spin: true },
+  saved: { label: 'Saved', icon: Check, tone: 'text-success', spin: false },
+  offline: { label: 'Offline · saved on this device', icon: CloudOff, tone: 'text-warning', spin: false },
+  error: { label: 'Could not sync', icon: AlertCircle, tone: 'text-destructive', spin: false },
+} as const;
+
+function SyncStatus({ className }: { className?: string }) {
+  const status = useEngineState((state) => state.status);
+  const { label, icon: Icon, tone, spin } = statusCopy[status];
+  return (
+    <div role="status" aria-live="polite" className={cn('flex items-center gap-1.5 text-xs', tone, className)}>
+      <Icon className={cn('size-3.5', spin && 'animate-spin')} aria-hidden="true" />
+      <span className="hidden sm:inline">{label}</span>
+      <span className="sr-only sm:hidden">{label}</span>
+    </div>
+  );
+}
+
+function ThemeMenu() {
+  const theme = useUi((state) => state.theme);
+  const setTheme = useUi((state) => state.setTheme);
+  const Current = THEMES.find((item) => item.value === theme)!.icon;
+  return (
+    <DropdownMenu>
+      <Tip label="Theme">
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon" aria-label="Change theme">
+            <Current className="size-4" />
+          </Button>
+        </DropdownMenuTrigger>
+      </Tip>
+      <DropdownMenuContent>
+        {THEMES.map(({ value, label, icon: Icon }) => (
+          <DropdownMenuItem key={value} onSelect={() => setTheme(value)} aria-checked={theme === value} role="menuitemradio">
+            <Icon /> {label}{' '}
+            {theme === value && (
+              <span className="ml-auto text-primary" aria-hidden="true">
+                ●
+              </span>
+            )}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function UserMenu() {
+  const navigate = useNavigate();
+  const { data: user } = useSession();
+  const signOut = useSignOut();
+  const initial = (user?.email[0] ?? '?').toUpperCase();
+  return (
+    <DropdownMenu>
+      <Tip label="Account">
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon" aria-label="Account menu" className="rounded-full">
+            <span className="flex size-7 items-center justify-center rounded-full bg-accent text-xs font-semibold text-accent-foreground">
+              {initial}
+            </span>
+          </Button>
+        </DropdownMenuTrigger>
+      </Tip>
+      <DropdownMenuContent className="min-w-56">
+        <DropdownMenuLabel className="truncate">{user?.email}</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => navigate('/settings')}>
+          <Settings /> Settings
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => signOut.mutate()}>
+          <LogOut /> Sign out
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }
 
 function useGlobalShortcuts() {

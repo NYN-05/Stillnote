@@ -7,6 +7,7 @@ const { AuthService } = require('../src/auth');
 const { buildApp } = require('../src/app');
 const { loadConfig } = require('../src/config');
 const { createMetrics } = require('../src/metrics');
+const { convertMarkdownNotes } = require('../src/contentMigration');
 
 // Each test gets its own schema so it never touches real notes.
 async function makeEnv(t) {
@@ -22,7 +23,7 @@ async function makeEnv(t) {
   });
   const store = new DocumentStore(pool);
   const userId = (await pool.query("INSERT INTO users (email, password_hash) VALUES ('owner@example.com', '!') RETURNING id")).rows[0].id;
-  return { store, pool, userId };
+  return { store, pool, schema, userId };
 }
 
 test('starts empty and creates documents with normalized titles and stable IDs', async (t) => {
@@ -31,7 +32,9 @@ test('starts empty and creates documents with normalized titles and stable IDs',
   const document = await store.create(userId, { id: 'note-a', title: '  Project notes  ', content: 'first line\nsecond line' });
   assert.equal(document.id, 'note-a');
   assert.equal(document.title, 'Project notes');
-  assert.equal(document.content, 'first line\nsecond line');
+  assert.equal(document.content, '<p>first line<br />\nsecond line</p>\n');
+  assert.equal(document.contentFormat, 'html');
+  assert.equal(document.contentSchemaVersion, 1);
   assert.equal(document.version, 1);
   assert.ok(Number.isFinite(Date.parse(document.createdAt)));
   assert.equal((await store.list(userId)).documents.length, 1);
@@ -43,7 +46,22 @@ test('list returns summaries without full content', async (t) => {
   const [summary] = (await store.list(userId)).documents;
   assert.equal(summary.content, undefined);
   assert.equal(summary.snippet.length, 200);
-  assert.equal((await store.get(userId, 'big')).content.length, 5000);
+  assert.equal(summary.contentFormat, 'html');
+  const full = await store.get(userId, 'big');
+  assert.ok(full.content.startsWith('<p>'));
+  assert.ok(full.content.includes('x'.repeat(5000)));
+});
+
+test('list snippets come from plain text, never HTML or Markdown syntax', async (t) => {
+  const { store, userId } = await makeEnv(t);
+  await store.create(userId, {
+    id: 'rich',
+    title: 'Rich',
+    content: '<p>Hello <strong>world</strong> &amp; <a href="https://example.com">friends</a></p>',
+    contentFormat: 'html',
+  });
+  const [summary] = (await store.list(userId)).documents;
+  assert.equal(summary.snippet, 'Hello world & friends');
 });
 
 test('updates partial fields, bumps the version, and keeps the client timestamp', async (t) => {
@@ -51,11 +69,11 @@ test('updates partial fields, bumps the version, and keeps the client timestamp'
   const created = await store.create(userId, { id: 'note-b', title: 'Draft', content: 'old content' });
   const updated = await store.update(userId, 'note-b', { content: 'new content', updatedAt: '2020-01-01T00:00:00.000Z' });
   assert.equal(updated.title, 'Draft');
-  assert.equal(updated.content, 'new content');
+  assert.equal(updated.content, '<p>new content</p>\n');
   assert.equal(updated.version, 2);
   assert.equal(updated.createdAt, created.createdAt);
   assert.equal(updated.updatedAt, '2020-01-01T00:00:00.000Z');
-  assert.equal((await store.get(userId, 'note-b')).content, 'new content');
+  assert.equal((await store.get(userId, 'note-b')).content, '<p>new content</p>\n');
 });
 
 test('future client timestamps are clamped to server time', async (t) => {
@@ -73,7 +91,7 @@ test('rejects invalid updates and duplicate IDs without changing stored data', a
   await assert.rejects(store.update(userId, 'note-c', {}), { statusCode: 400 });
   await assert.rejects(store.update(userId, 'note-c', { content: 'x', version: 0 }), { code: 'INVALID_VERSION' });
   await assert.rejects(store.update(userId, 'missing', { content: 'x' }), { statusCode: 404 });
-  assert.equal((await store.get(userId, 'note-c')).content, 'safe');
+  assert.equal((await store.get(userId, 'note-c')).content, '<p>safe</p>\n');
 });
 
 test('a stale version is rejected with the current document', async (t) => {
@@ -85,10 +103,10 @@ test('a stale version is rejected with the current document', async (t) => {
     (error) =>
       error.statusCode === 409 &&
       error.code === 'VERSION_CONFLICT' &&
-      error.details.current.content === 'two' &&
+      error.details.current.content === '<p>two</p>\n' &&
       error.details.current.version === 2,
   );
-  assert.equal((await store.get(userId, 'v')).content, 'two');
+  assert.equal((await store.get(userId, 'v')).content, '<p>two</p>\n');
 });
 
 test('concurrent writers on the same version: exactly one wins', async (t) => {
@@ -148,7 +166,7 @@ test('pinning is stored, listed, and bumps the version without touching content'
   assert.equal(created.pinned, false);
   const pinned = await store.update(userId, 'p', { pinned: true });
   assert.equal(pinned.pinned, true);
-  assert.equal(pinned.content, 'body');
+  assert.equal(pinned.content, '<p>body</p>\n');
   assert.equal(pinned.version, 2);
   assert.equal((await store.list(userId)).documents[0].pinned, true);
   await assert.rejects(store.update(userId, 'p', { pinned: 'yes' }), { code: 'INVALID_PINNED' });
@@ -160,13 +178,163 @@ test('users are isolated: same note ID, no cross-reads, writes, or deletes', asy
   const other = (await pool.query("INSERT INTO users (email, password_hash) VALUES ('other@example.com', '!') RETURNING id")).rows[0].id;
   await store.create(userId, { id: 'shared-id', title: 'Mine', content: 'private' });
   await store.create(other, { id: 'shared-id', title: 'Theirs', content: 'also private' });
-  assert.equal((await store.get(userId, 'shared-id')).content, 'private');
-  assert.equal((await store.get(other, 'shared-id')).content, 'also private');
+  assert.equal((await store.get(userId, 'shared-id')).content, '<p>private</p>\n');
+  assert.equal((await store.get(other, 'shared-id')).content, '<p>also private</p>\n');
   await store.create(userId, { id: 'only-mine' });
   assert.equal(await store.get(other, 'only-mine'), null);
   await assert.rejects(store.update(other, 'only-mine', { content: 'hax' }), { statusCode: 404 });
   await assert.rejects(store.delete(other, 'only-mine'), { statusCode: 404 });
   assert.equal((await store.list(other)).documents.length, 1);
+});
+
+// ---- content format / conversion ----------------------------------------
+
+test('HTML writes are sanitized and carry explicit format metadata', async (t) => {
+  const { store, pool, userId } = await makeEnv(t);
+  const document = await store.create(userId, {
+    id: 'rich',
+    title: 'Rich',
+    content: '<p onclick="steal()">Hello <strong>world</strong><script>alert(1)</script></p>',
+    contentFormat: 'html',
+    contentSchemaVersion: 1,
+  });
+  assert.equal(document.content, '<p>Hello <strong>world</strong></p>');
+  assert.equal(document.contentFormat, 'html');
+  assert.equal(document.contentSchemaVersion, 1);
+  const stored = (await pool.query('SELECT content, content_format, plain_text FROM notes WHERE id = $1', ['rich'])).rows[0];
+  assert.equal(stored.content_format, 'html');
+  assert.equal(stored.plain_text, 'Hello world');
+});
+
+test('unsupported formats and schema versions are rejected without writing', async (t) => {
+  const { store, userId } = await makeEnv(t);
+  await assert.rejects(store.create(userId, { id: 'bad-format', content: 'x', contentFormat: 'text' }), {
+    statusCode: 400,
+    code: 'INVALID_CONTENT_FORMAT',
+  });
+  await assert.rejects(store.create(userId, { id: 'bad-schema', content: 'x', contentFormat: 'html', contentSchemaVersion: 99 }), {
+    statusCode: 400,
+    code: 'UNSUPPORTED_CONTENT_SCHEMA',
+  });
+  assert.equal(await store.get(userId, 'bad-format'), null);
+  assert.equal(await store.get(userId, 'bad-schema'), null);
+});
+
+test('unconverted Markdown rows are served as HTML and persist when saved', async (t) => {
+  const { store, pool, userId } = await makeEnv(t);
+  await pool.query(
+    `INSERT INTO notes (user_id, id, title, content, content_format, version, pinned, created_at, updated_at)
+     VALUES ($1, 'legacy-live', 'Legacy', $2, 'markdown', 3, true, '2020-01-01T00:00:00Z', '2021-01-01T00:00:00Z')`,
+    [userId, '# Old\n\nBody with **bold**'],
+  );
+
+  const read = await store.get(userId, 'legacy-live');
+  assert.equal(read.contentFormat, 'html');
+  assert.match(read.content, /<h1>Old<\/h1>/);
+  assert.match(read.content, /<strong>bold<\/strong>/);
+  assert.equal(read.version, 3);
+  assert.equal(read.pinned, true);
+
+  const saved = await store.update(userId, 'legacy-live', {
+    content: read.content,
+    contentFormat: 'html',
+    contentSchemaVersion: 1,
+    version: 3,
+  });
+  assert.equal(saved.version, 4);
+  assert.equal(saved.contentFormat, 'html');
+  const row = (await pool.query('SELECT content_format, plain_text FROM notes WHERE id = $1', ['legacy-live'])).rows[0];
+  assert.equal(row.content_format, 'html');
+  assert.equal(row.plain_text, 'Old Body with bold');
+});
+
+test('conversion preserves identity, ownership, timestamps and pin while bumping version once', async (t) => {
+  const { pool, userId } = await makeEnv(t);
+  await pool.query(
+    `INSERT INTO notes (user_id, id, title, content, content_format, version, pinned, created_at, updated_at)
+     VALUES ($1, 'convert-me', 'Keep title', $2, 'markdown', 7, true, '2020-01-01T00:00:00Z', '2021-02-03T04:05:06Z')`,
+    [userId, '# Heading\n\n| a | b |\n|---|---|\n| 1 | 2 |'],
+  );
+
+  const result = await convertMarkdownNotes(pool, { log: { log() {}, error() {}, warn() {} } });
+  assert.deepEqual(
+    { converted: result.converted, skipped: result.skipped, failed: result.failed },
+    { converted: 1, skipped: 0, failed: 0 },
+  );
+
+  const row = (
+    await pool.query(
+      'SELECT id, user_id, title, content, content_format, content_schema_version, plain_text, version, pinned, created_at, updated_at FROM notes WHERE id = $1',
+      ['convert-me'],
+    )
+  ).rows[0];
+  assert.equal(row.user_id, userId);
+  assert.equal(row.title, 'Keep title');
+  assert.equal(row.content_format, 'html');
+  assert.equal(row.content_schema_version, 1);
+  assert.match(row.content, /<h1>Heading<\/h1>/);
+  assert.match(row.content, /<table>/);
+  assert.equal(row.plain_text, 'Heading a b 1 2');
+  assert.equal(row.version, 8);
+  assert.equal(row.pinned, true);
+  assert.equal(row.created_at.toISOString(), '2020-01-01T00:00:00.000Z');
+  assert.equal(row.updated_at.toISOString(), '2021-02-03T04:05:06.000Z');
+
+  const again = await convertMarkdownNotes(pool, { log: { log() {}, error() {}, warn() {} } });
+  assert.equal(again.converted, 0);
+  assert.equal(again.examined, 0);
+});
+
+test('conversion dry-run reports rows without changing them', async (t) => {
+  const { pool, userId } = await makeEnv(t);
+  await pool.query(
+    `INSERT INTO notes (user_id, id, title, content, content_format, version)
+     VALUES ($1, 'dry', 'Dry', '# Still Markdown', 'markdown', 2)`,
+    [userId],
+  );
+  const result = await convertMarkdownNotes(pool, {
+    dryRun: true,
+    log: { log() {}, error() {}, warn() {} },
+  });
+  assert.equal(result.converted, 1);
+  const row = (await pool.query('SELECT content, content_format, version FROM notes WHERE id = $1', ['dry'])).rows[0];
+  assert.equal(row.content, '# Still Markdown');
+  assert.equal(row.content_format, 'markdown');
+  assert.equal(row.version, 2);
+});
+
+test('a row whose conversion would exceed the limit stays Markdown and is reported', async (t) => {
+  const { pool, userId } = await makeEnv(t);
+  await pool.query(
+    `INSERT INTO notes (user_id, id, title, content, content_format, version)
+     VALUES ($1, 'too-big', 'Big', $2, 'markdown', 2)`,
+    [userId, 'a'.repeat(499_999)],
+  );
+  const result = await convertMarkdownNotes(pool, { log: { log() {}, error() {}, warn() {} } });
+  assert.equal(result.failed, 1);
+  assert.equal(result.converted, 0);
+  assert.equal(result.failures[0].id, 'too-big');
+  const row = (await pool.query('SELECT content_format, version FROM notes WHERE id = $1', ['too-big'])).rows[0];
+  assert.equal(row.content_format, 'markdown');
+  assert.equal(row.version, 2);
+});
+
+test('a stale offline client cannot overwrite converted HTML', async (t) => {
+  const { store, pool, userId } = await makeEnv(t);
+  await pool.query(
+    `INSERT INTO notes (user_id, id, title, content, content_format, version)
+     VALUES ($1, 'race-convert', 'Race', '# New format', 'markdown', 4)`,
+    [userId],
+  );
+  await convertMarkdownNotes(pool, { log: { log() {}, error() {}, warn() {} } });
+  await assert.rejects(store.update(userId, 'race-convert', { content: 'stale markdown', contentFormat: 'markdown', version: 4 }), {
+    statusCode: 409,
+    code: 'VERSION_CONFLICT',
+  });
+  const row = (await pool.query('SELECT content, content_format, version FROM notes WHERE id = $1', ['race-convert'])).rows[0];
+  assert.equal(row.content_format, 'html');
+  assert.match(row.content, /<h1>New format<\/h1>/);
+  assert.equal(row.version, 5);
 });
 
 // ---- HTTP + auth ----------------------------------------------------------
@@ -254,7 +422,9 @@ test('HTTP: notes CRUD, conflict payload, isolation between accounts, error shap
 
   const created = await alice('/documents', { method: 'POST', body: { id: 'h1', title: 'HTTP', content: 'hi' } });
   assert.equal(created.status, 201);
-  assert.equal((await alice('/documents/h1')).body.document.content, 'hi');
+  assert.equal((await alice('/documents/h1')).body.document.content, '<p>hi</p>\n');
+  assert.equal((await alice('/documents/h1')).body.document.contentFormat, 'html');
+  assert.equal((await alice('/documents/h1')).body.document.contentSchemaVersion, 1);
   assert.equal((await alice('/documents/nope')).status, 404);
   assert.equal((await alice('/documents?limit=1')).body.nextCursor, null);
 
@@ -269,7 +439,7 @@ test('HTTP: notes CRUD, conflict payload, isolation between accounts, error shap
   const conflict = await alice('/documents/h1', { method: 'PUT', body: { content: 'stale', version: 1 } });
   assert.equal(conflict.status, 409);
   assert.equal(conflict.body.error.code, 'VERSION_CONFLICT');
-  assert.equal(conflict.body.error.details.current.content, 'v2');
+  assert.equal(conflict.body.error.details.current.content, '<p>v2</p>\n');
 
   assert.equal((await alice('/documents/h1', { method: 'PUT', body: '{bad' })).body.error.code, 'INVALID_JSON');
   assert.equal((await alice('/documents?cursor=zzz')).status, 400);
@@ -277,6 +447,68 @@ test('HTTP: notes CRUD, conflict payload, isolation between accounts, error shap
   const missing = await alice('/nothing');
   assert.equal(missing.status, 404);
   assert.equal(missing.body.error.code, 'ROUTE_NOT_FOUND');
+});
+
+test('HTTP: two API instances share one database and session store', async (t) => {
+  const env = await makeEnv(t);
+  const config = { ...loadConfig(), logLevel: 'silent', rateLimitMax: 1000, authRateLimitMax: 100 };
+  const poolB = createPool({ max: 5, options: `-c search_path=${env.schema}` });
+  const apps = [];
+  const make = async (pool) => {
+    const auth = new AuthService(pool, { sessionTtlMs: config.sessionTtlMs, allowRegistration: true, cacheTtlMs: 0 });
+    const app = await buildApp({ config, store: new DocumentStore(pool), auth, logger: false });
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    apps.push(app);
+    return app;
+  };
+  t.after(async () => {
+    await Promise.all(apps.map((app) => app.close()));
+    await poolB.end();
+  });
+  const appA = await make(env.pool);
+  const appB = await make(poolB);
+
+  const registered = await appA.inject({
+    method: 'POST',
+    url: '/api/auth/register',
+    payload: { email: 'multi@example.com', password: PASSWORD },
+  });
+  assert.equal(registered.statusCode, 201);
+  const cookie = registered.headers['set-cookie'].split(';')[0];
+
+  const created = await appA.inject({
+    method: 'POST',
+    url: '/api/documents',
+    headers: { cookie },
+    payload: { id: 'shared', title: 'Across instances', content: '# First' },
+  });
+  assert.equal(created.statusCode, 201);
+
+  // Instance B resolves the same session cookie and database row.
+  const read = await appB.inject({ method: 'GET', url: '/api/documents/shared', headers: { cookie } });
+  assert.equal(read.statusCode, 200);
+  assert.match(read.json().document.content, /<h1>First<\/h1>/);
+  assert.equal(read.json().document.version, 1);
+
+  const updated = await appB.inject({
+    method: 'PUT',
+    url: '/api/documents/shared',
+    headers: { cookie },
+    payload: { content: '<p>Second</p>', contentFormat: 'html', contentSchemaVersion: 1, version: 1 },
+  });
+  assert.equal(updated.statusCode, 200);
+  assert.equal(updated.json().document.version, 2);
+
+  // Instance A rejects the now-stale write and returns B's current document.
+  const stale = await appA.inject({
+    method: 'PUT',
+    url: '/api/documents/shared',
+    headers: { cookie },
+    payload: { content: 'stale', version: 1 },
+  });
+  assert.equal(stale.statusCode, 409);
+  assert.equal(stale.json().error.code, 'VERSION_CONFLICT');
+  assert.equal(stale.json().error.details.current.content, '<p>Second</p>');
 });
 
 test('HTTP: request IDs, health, origin guard, and oversized bodies', async (t) => {

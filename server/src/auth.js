@@ -1,6 +1,6 @@
 const crypto = require('node:crypto');
 const argon2 = require('argon2');
-const { StoreError } = require('./documentStore');
+const { StoreError } = require('./storeError');
 
 const MIN_PASSWORD_LENGTH = 10;
 const MAX_PASSWORD_LENGTH = 128;

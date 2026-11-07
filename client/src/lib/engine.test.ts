@@ -1,9 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError, type NotesApi } from './api';
-import { createMemoryStore } from './db';
-import { SyncEngine, makeNote } from './engine';
-import { mergeNotes } from './merge';
-import type { Note, RemoteNote, RemoteSummary } from './types';
+import type { LocalMeta, LocalSnapshot, LocalStore } from './db';
+import { SyncEngine, makeNote, mergeNotes } from './engine';
+import type { Note, RemoteNote, RemoteSummary } from './model';
 
 /** An in-memory server with the real API's versioning and error behaviour. */
 function fakeServer(initial: RemoteNote[] = []) {
@@ -79,6 +78,28 @@ function fakeServer(initial: RemoteNote[] = []) {
   };
 }
 
+/** An in-memory LocalStore, so engine tests do not need IndexedDB. */
+function createMemoryStore(initial: Partial<LocalSnapshot> = {}): LocalStore & { snapshot(): LocalSnapshot } {
+  const notes = new Map((initial.notes ?? []).map((note) => [note.id, note]));
+  let meta: LocalMeta = { activeId: initial.activeId ?? null, tombstones: initial.tombstones ?? {} };
+  return {
+    async load() {
+      return { notes: [...notes.values()], ...meta };
+    },
+    async putNote(note) {
+      notes.set(note.id, note);
+    },
+    async deleteNote(id) {
+      notes.delete(id);
+    },
+    async saveMeta(next) {
+      meta = { activeId: next.activeId, tombstones: { ...next.tombstones } };
+    },
+    close() {},
+    snapshot: () => ({ notes: [...notes.values()], ...meta }),
+  };
+}
+
 const remoteNote = (id: string, content: string, updatedAt: string, extra: Partial<RemoteNote> = {}): RemoteNote => ({
   id,
   title: id,
@@ -100,10 +121,30 @@ const localNote = (id: string, content: string | null, updatedAt: string, extra:
   ...extra,
 });
 
-async function startEngine(server: ReturnType<typeof fakeServer>, local: Partial<Parameters<typeof createMemoryStore>[0]> = {}) {
+interface Timing {
+  saveDelayMs?: number;
+  maxSaveDelayMs?: number;
+  persistDelayMs?: number;
+  maxPersistDelayMs?: number;
+}
+
+async function startEngine(
+  server: ReturnType<typeof fakeServer>,
+  local: Partial<Parameters<typeof createMemoryStore>[0]> = {},
+  timing: Timing = {},
+) {
   const store = createMemoryStore(local);
   const notify = vi.fn();
-  const engine = new SyncEngine({ api: server.api, store, notify, saveDelayMs: 5, persistDelayMs: 5, retryIntervalMs: 1_000_000 });
+  const engine = new SyncEngine({
+    api: server.api,
+    store,
+    notify,
+    saveDelayMs: timing.saveDelayMs ?? 5,
+    maxSaveDelayMs: timing.maxSaveDelayMs ?? 5_000,
+    persistDelayMs: timing.persistDelayMs ?? 5,
+    maxPersistDelayMs: timing.maxPersistDelayMs ?? 1_000,
+    retryIntervalMs: 1_000_000,
+  });
   await engine.start();
   return { engine, store, notify };
 }
@@ -147,6 +188,43 @@ describe('mergeNotes', () => {
     const summary: RemoteSummary = { id: 'x', title: 'X', snippet: '', pinned: false, version: 1, createdAt: T1, updatedAt: T1 };
     const { notes } = mergeNotes([localNote('x', 'text', T2)], [summary], new Set(['x']));
     expect(notes).toEqual([]);
+  });
+
+  it('never lets legacy Markdown overwrite converted server HTML, even when its timestamp is newer', () => {
+    const summary: RemoteSummary = {
+      id: 'a',
+      title: 'A',
+      snippet: '',
+      contentFormat: 'html',
+      contentSchemaVersion: 1,
+      pinned: false,
+      version: 4,
+      createdAt: T1,
+      updatedAt: T1,
+    };
+    const local = localNote('a', '# Old', T3, { version: 3, contentFormat: 'markdown', contentSchemaVersion: 1 });
+    const { notes, needsSync, conflicts } = mergeNotes([local], [summary], new Set());
+    expect(notes[0]).toMatchObject({ content: null, version: 4, contentFormat: 'html' });
+    expect(needsSync).toEqual([]);
+    expect(conflicts).toEqual([]);
+  });
+
+  it('keeps the open note’s legacy text on screen and reports a conflict instead of replacing it', () => {
+    const summary: RemoteSummary = {
+      id: 'a',
+      title: 'A',
+      snippet: '',
+      contentFormat: 'html',
+      contentSchemaVersion: 1,
+      pinned: false,
+      version: 4,
+      createdAt: T1,
+      updatedAt: T1,
+    };
+    const local = localNote('a', '# Old', T3, { version: 3, contentFormat: 'markdown', contentSchemaVersion: 1 });
+    const { notes, conflicts } = mergeNotes([local], [summary], new Set(), 'a');
+    expect(notes[0]).toMatchObject({ content: '# Old', version: 3 });
+    expect(conflicts).toEqual([{ id: 'a', remote: summary }]);
   });
 });
 
@@ -199,17 +277,101 @@ describe('SyncEngine', () => {
     expect(store.snapshot().notes[0].content).toBe('two');
   });
 
-  it('sends saves for one note in order, each with the previous version', async () => {
+  it('sends saves for one note in order while typing continues, each with the previous version', async () => {
+    const server = fakeServer([remoteNote('a', 'one', T1)]);
+    const { engine } = await startEngine(server);
+    await engine.loadContent('a');
+
+    const originalUpdate = server.api.update;
+    let releaseFirst!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let requests = 0;
+    server.api.update = async (id, body) => {
+      requests += 1;
+      if (requests === 1) {
+        markStarted();
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+      }
+      return originalUpdate(id, body);
+    };
+
+    engine.edit('a', { content: 'two' });
+    const first = engine.saveNow('a');
+    await started;
+    engine.edit('a', { content: 'three' });
+    const second = engine.saveNow('a');
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(server.notes.get('a')).toMatchObject({ content: 'three', version: 3 });
+    expect(server.calls.filter((call) => call.startsWith('update'))).toEqual(['update:a:v1', 'update:a:v2']);
+  });
+
+  it('does not upload the same unchanged note twice', async () => {
     const server = fakeServer([remoteNote('a', 'one', T1)]);
     const { engine } = await startEngine(server);
     await engine.loadContent('a');
     engine.edit('a', { content: 'two' });
-    const first = engine.saveNow('a');
-    engine.edit('a', { content: 'three' });
-    const second = engine.saveNow('a');
-    await Promise.all([first, second]);
-    expect(server.notes.get('a')).toMatchObject({ content: 'three', version: 3 });
-    expect(server.calls.filter((call) => call.startsWith('update'))).toEqual(['update:a:v1', 'update:a:v2']);
+    await Promise.all([engine.saveNow('a'), engine.saveNow('a')]);
+    expect(server.calls.filter((call) => call.startsWith('update'))).toEqual(['update:a:v1']);
+    expect(server.notes.get('a')).toMatchObject({ content: 'two', version: 2 });
+  });
+
+  it('uploads periodically while typing continues instead of waiting for a pause', async () => {
+    vi.useFakeTimers();
+    try {
+      const server = fakeServer([remoteNote('a', 'one', T1)]);
+      const { engine } = await startEngine(server, {}, { saveDelayMs: 100, maxSaveDelayMs: 250 });
+      await engine.loadContent('a');
+      let draft = 0;
+      for (let elapsed = 0; elapsed < 400; elapsed += 40) {
+        engine.edit('a', { content: `draft ${++draft}` });
+        await vi.advanceTimersByTimeAsync(40);
+      }
+      expect(server.calls.some((call) => call.startsWith('update'))).toBe(true);
+      await engine.flush();
+      expect(server.notes.get('a')?.content).toBe(`draft ${draft}`);
+      engine.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('writes continuous edits to local storage without waiting for a pause', async () => {
+    vi.useFakeTimers();
+    try {
+      const server = fakeServer([remoteNote('a', 'one', T1)]);
+      const { engine, store } = await startEngine(server, {}, { persistDelayMs: 100, maxPersistDelayMs: 250 });
+      await engine.loadContent('a');
+      let draft = 0;
+      for (let elapsed = 0; elapsed < 300; elapsed += 40) {
+        engine.edit('a', { content: `draft ${++draft}` });
+        await vi.advanceTimersByTimeAsync(40);
+      }
+      expect(store.snapshot().notes.find((note) => note.id === 'a')?.content).toBe(`draft ${draft}`);
+      engine.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('persists and uploads immediately when switching notes', async () => {
+    const server = fakeServer([remoteNote('a', 'one', T1), remoteNote('b', 'two', T2)]);
+    const { engine, store } = await startEngine(
+      server,
+      {},
+      { saveDelayMs: 5_000, maxSaveDelayMs: 5_000, persistDelayMs: 5_000, maxPersistDelayMs: 5_000 },
+    );
+    await engine.loadContent('a');
+    engine.edit('a', { content: 'edited before switching' });
+    engine.select('b');
+    await engine.flush();
+    expect(server.notes.get('a')?.content).toBe('edited before switching');
+    expect(store.snapshot().notes.find((note) => note.id === 'a')?.content).toBe('edited before switching');
   });
 
   it('creates a never-uploaded note directly, without a failing update first', async () => {
@@ -235,10 +397,11 @@ describe('SyncEngine', () => {
     expect(server.notes.get('a')?.content).toBe('offline draft');
   });
 
-  it('on a version conflict, a newer local edit wins and is re-sent against the current version', async () => {
-    const server = fakeServer([remoteNote('a', 'one', T1)]);
+  it('on a version conflict in a background note, a newer local edit wins and is re-sent', async () => {
+    const server = fakeServer([remoteNote('a', 'one', T1), remoteNote('b', 'two', T1)]);
     const { engine } = await startEngine(server);
     await engine.loadContent('a');
+    engine.select('b'); // `a` is no longer the open note
     server.notes.get('a')!.version = 7; // another session saved in between
     server.notes.get('a')!.updatedAt = T1;
     engine.edit('a', { content: 'mine' });
@@ -246,15 +409,57 @@ describe('SyncEngine', () => {
     expect(server.notes.get('a')).toMatchObject({ content: 'mine', version: 8 });
   });
 
-  it('on a version conflict, a newer remote edit replaces the local one and tells the user', async () => {
+  it('pauses an open note’s conflict even when the local timestamp is newer', async () => {
+    const server = fakeServer([remoteNote('a', 'one', T1)]);
+    const { engine } = await startEngine(server);
+    await engine.loadContent('a');
+    Object.assign(server.notes.get('a')!, { content: 'theirs', version: 9, updatedAt: T1 });
+    engine.edit('a', { content: 'mine' });
+    await engine.flush();
+    expect(engine.getState().conflict).toMatchObject({ noteId: 'a', remoteVersion: 9 });
+    expect(server.notes.get('a')).toMatchObject({ content: 'theirs', version: 9 });
+  });
+
+  it('on a version conflict in the open note, keeps the local text and pauses autosave until the user chooses', async () => {
     const server = fakeServer([remoteNote('a', 'one', T1)]);
     const { engine, notify } = await startEngine(server);
     await engine.loadContent('a');
     engine.edit('a', { content: 'mine' });
     Object.assign(server.notes.get('a')!, { content: 'theirs', version: 9, updatedAt: '2999-01-01T00:00:00.000Z' });
     await engine.flush();
+
+    const state = engine.getState();
+    expect(state.notes[0]).toMatchObject({ content: 'mine' });
+    expect(state.conflict).toMatchObject({
+      noteId: 'a',
+      remoteVersion: 9,
+      remote: { content: 'theirs', version: 9 },
+    });
+    expect(notify).toHaveBeenCalledWith('This note was updated in another session');
+
+    // Further edits stay local: autosave must not overwrite the other version.
+    engine.edit('a', { content: 'mine again' });
+    await engine.saveNow('a');
+    expect(server.notes.get('a')).toMatchObject({ content: 'theirs', version: 9 });
+
+    await engine.reloadConflict('a');
     expect(engine.getState().notes[0]).toMatchObject({ content: 'theirs', version: 9 });
-    expect(notify).toHaveBeenCalledWith('This note was updated from another session');
+    expect(engine.getState().conflict).toBeNull();
+  });
+
+  it('can keep the local text after a conflict, replacing the other version explicitly', async () => {
+    const server = fakeServer([remoteNote('a', 'one', T1)]);
+    const { engine } = await startEngine(server);
+    await engine.loadContent('a');
+    engine.edit('a', { content: 'mine' });
+    Object.assign(server.notes.get('a')!, { content: 'theirs', version: 9, updatedAt: '2999-01-01T00:00:00.000Z' });
+    await engine.flush();
+    expect(engine.getState().conflict).not.toBeNull();
+
+    await engine.keepLocalConflict('a');
+    expect(server.notes.get('a')).toMatchObject({ content: 'mine', version: 10 });
+    expect(engine.getState().conflict).toBeNull();
+    expect(engine.getState().notes[0]).toMatchObject({ content: 'mine', version: 10 });
   });
 
   it('refuses to edit the text of a note that has not been downloaded, but allows pinning', async () => {
@@ -320,12 +525,13 @@ describe('SyncEngine', () => {
 
   it('uploads offline edits when the connection returns', async () => {
     const server = fakeServer([remoteNote('a', 'one', T1)]);
-    const { engine } = await startEngine(server);
+    const { engine, store } = await startEngine(server);
     await engine.loadContent('a');
     server.setOffline(true);
     engine.edit('a', { content: 'written offline' });
     await engine.flush();
     expect(engine.getState().status).toBe('offline');
+    expect(store.snapshot().notes.find((note) => note.id === 'a')?.content).toBe('written offline');
     server.setOffline(false);
     await engine.reconcile();
     expect(server.notes.get('a')?.content).toBe('written offline');

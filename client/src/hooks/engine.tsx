@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import { notesApi } from '@/lib/api';
 import { openLocalStore } from '@/lib/db';
 import { SyncEngine, type EngineState } from '@/lib/engine';
-import type { Note } from '@/lib/types';
+import type { Note } from '@/lib/model';
 
 const EngineContext = createContext<SyncEngine | null>(null);
 

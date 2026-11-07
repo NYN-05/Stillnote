@@ -1,18 +1,21 @@
+import { Monitor, Moon, Sun } from 'lucide-react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 export type Theme = 'system' | 'light' | 'dark';
-export type ViewMode = 'write' | 'split' | 'preview';
+
+/** Theme choices shared by the header menu, command palette and settings page. */
+export const THEMES = [
+  { value: 'light', label: 'Light', icon: Sun },
+  { value: 'dark', label: 'Dark', icon: Moon },
+  { value: 'system', label: 'System', icon: Monitor },
+] as const satisfies readonly { value: Theme; label: string; icon: typeof Sun }[];
 
 interface UiState {
   theme: Theme;
-  monospace: boolean;
-  viewMode: ViewMode;
   sidebarOpen: boolean;
   paletteOpen: boolean;
   setTheme: (theme: Theme) => void;
-  setMonospace: (monospace: boolean) => void;
-  setViewMode: (viewMode: ViewMode) => void;
   setSidebarOpen: (open: boolean) => void;
   setPaletteOpen: (open: boolean) => void;
 }
@@ -23,19 +26,15 @@ export const useUi = create<UiState>()(
   persist(
     (set) => ({
       theme: 'system',
-      monospace: false,
-      viewMode: 'write',
       sidebarOpen: typeof window === 'undefined' || window.innerWidth >= 768,
       paletteOpen: false,
       setTheme: (theme) => set({ theme }),
-      setMonospace: (monospace) => set({ monospace }),
-      setViewMode: (viewMode) => set({ viewMode }),
       setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
       setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
     }),
     {
       name: 'stillnote-ui',
-      partialize: ({ theme, monospace, viewMode }) => ({ theme, monospace, viewMode }),
+      partialize: ({ theme }) => ({ theme }),
     },
   ),
 );

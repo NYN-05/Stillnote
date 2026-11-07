@@ -6,6 +6,7 @@ COPY server/package.json server/
 COPY client/package.json client/
 RUN npm ci --workspace @stillnote/client --include-workspace-root=false
 COPY client ./client
+COPY shared ./shared
 # Leave VITE_API_URL unset: the browser calls /api on the same origin and nginx proxies it.
 RUN npm run build --workspace @stillnote/client
 

@@ -1,23 +1,17 @@
 const { randomUUID } = require('node:crypto');
+const { StoreError } = require('./storeError');
+const { markdownToHtml, normalizeContent, policy } = require('./content');
 
-const MAX_TITLE_LENGTH = 120;
-const MAX_CONTENT_LENGTH = 500_000;
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
 const SNIPPET_LENGTH = 200;
 
-const FULL_COLUMNS = 'id, title, content, pinned, version, created_at, updated_at';
-const SUMMARY_COLUMNS = `id, title, left(content, ${SNIPPET_LENGTH}) AS snippet, pinned, version, created_at, updated_at`;
-
-class StoreError extends Error {
-  constructor(message, statusCode = 500, code = 'STORE_ERROR', details) {
-    super(message);
-    this.name = 'StoreError';
-    this.statusCode = statusCode;
-    this.code = code;
-    this.details = details;
-  }
-}
+const FULL_COLUMNS = 'id, title, content, content_format, content_schema_version, pinned, version, created_at, updated_at';
+// List snippets come from `plain_text`, so users never see HTML tags or Markdown syntax.
+// Legacy rows that have not been converted yet fall back to their raw content.
+const SUMMARY_COLUMNS = `id, title,
+  left(CASE WHEN content_format = 'html' THEN plain_text ELSE content END, ${SNIPPET_LENGTH}) AS snippet,
+  content_format, content_schema_version, pinned, version, created_at, updated_at`;
 
 class DocumentStore {
   constructor(pool) {
@@ -68,11 +62,22 @@ class DocumentStore {
 
     // Soft-deleted rows keep their ID, so a re-create of a deleted ID also conflicts.
     const { rows } = await this.pool.query(
-      `INSERT INTO notes (user_id, id, title, content, pinned, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO notes (user_id, id, title, content, content_format, content_schema_version, plain_text, pinned, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (user_id, id) DO NOTHING
        RETURNING ${FULL_COLUMNS}`,
-      [userId, id, values.title, values.content, values.pinned, createdAt, updatedAt],
+      [
+        userId,
+        id,
+        values.title,
+        values.content,
+        values.contentFormat,
+        values.contentSchemaVersion,
+        values.plainText,
+        values.pinned,
+        createdAt,
+        updatedAt,
+      ],
     );
     if (!rows[0]) throw new StoreError('A document with this ID already exists.', 409, 'DOCUMENT_EXISTS');
     return toDocument(rows[0]);
@@ -90,7 +95,15 @@ class DocumentStore {
       throw new StoreError('Provide a title, content, and/or pinned to update.', 400, 'EMPTY_UPDATE');
     }
     const title = hasTitle ? validateTitle(input.title) : null;
-    const content = hasContent ? validateContent(input.content) : null;
+    // A legacy client sends content with no format; it is converted to HTML here,
+    // so Markdown can never be stored under an HTML tag by accident.
+    const content = hasContent
+      ? normalizeContent({
+          content: input.content,
+          contentFormat: input.contentFormat,
+          contentSchemaVersion: input.contentSchemaVersion,
+        })
+      : null;
     const pinned = hasPinned ? validatePinned(input.pinned) : null;
     const expectedVersion = hasOwn(input, 'version') && input.version !== null ? validateVersion(input.version) : null;
     const now = new Date();
@@ -101,12 +114,26 @@ class DocumentStore {
       `UPDATE notes
        SET title = COALESCE($2, title),
            content = COALESCE($3, content),
-           pinned = COALESCE($7::boolean, pinned),
+           content_format = COALESCE($4, content_format),
+           content_schema_version = COALESCE($5, content_schema_version),
+           plain_text = COALESCE($6, plain_text),
+           pinned = COALESCE($10::boolean, pinned),
            version = version + 1,
-           updated_at = $4
-       WHERE user_id = $6 AND id = $1 AND deleted_at IS NULL AND ($5::integer IS NULL OR version = $5::integer)
+           updated_at = $7
+       WHERE user_id = $9 AND id = $1 AND deleted_at IS NULL AND ($8::integer IS NULL OR version = $8::integer)
        RETURNING ${FULL_COLUMNS}`,
-      [id, title, content, updatedAt, expectedVersion, userId, pinned],
+      [
+        id,
+        title,
+        content?.content ?? null,
+        content?.contentFormat ?? null,
+        content?.contentSchemaVersion ?? null,
+        content?.plainText ?? null,
+        updatedAt,
+        expectedVersion,
+        userId,
+        pinned,
+      ],
     );
     if (rows[0]) return toDocument(rows[0]);
 
@@ -126,10 +153,15 @@ class DocumentStore {
 }
 
 function toDocument(row) {
+  // A row that has not been converted yet is served as sanitized HTML so every
+  // client sees one format. Saving the note persists that HTML.
+  const legacy = row.content_format === 'markdown';
   return {
     id: row.id,
     title: row.title,
-    content: row.content,
+    content: legacy ? markdownToHtml(row.content) : row.content,
+    contentFormat: 'html',
+    contentSchemaVersion: legacy ? policy.schemaVersion : row.content_schema_version,
     pinned: row.pinned,
     version: row.version,
     createdAt: row.created_at.toISOString(),
@@ -142,6 +174,8 @@ function toSummary(row) {
     id: row.id,
     title: row.title,
     snippet: row.snippet,
+    contentFormat: 'html',
+    contentSchemaVersion: policy.schemaVersion,
     pinned: row.pinned,
     version: row.version,
     createdAt: row.created_at.toISOString(),
@@ -154,8 +188,12 @@ function validateInput(input) {
     throw new StoreError('Request body must be a JSON object.', 400, 'INVALID_BODY');
   }
   return {
-    title: hasOwn(input, 'title') ? validateTitle(input.title) : 'Untitled note',
-    content: hasOwn(input, 'content') ? validateContent(input.content) : '',
+    title: hasOwn(input, 'title') ? validateTitle(input.title) : policy.defaultNoteTitle,
+    ...normalizeContent({
+      content: hasOwn(input, 'content') ? input.content : '',
+      contentFormat: input.contentFormat,
+      contentSchemaVersion: input.contentSchemaVersion,
+    }),
     pinned: hasOwn(input, 'pinned') ? validatePinned(input.pinned) : false,
   };
 }
@@ -164,23 +202,11 @@ function validateTitle(value) {
   if (typeof value !== 'string') {
     throw new StoreError('Title must be a string.', 400, 'INVALID_TITLE');
   }
-  const title = value.trim() || 'Untitled note';
-  if (title.length > MAX_TITLE_LENGTH) {
-    throw new StoreError(`Title must be ${MAX_TITLE_LENGTH} characters or fewer.`, 400, 'TITLE_TOO_LONG');
+  const title = value.trim() || policy.defaultNoteTitle;
+  if (title.length > policy.maxTitleLength) {
+    throw new StoreError(`Title must be ${policy.maxTitleLength} characters or fewer.`, 400, 'TITLE_TOO_LONG');
   }
   return title;
-}
-
-function validateContent(value) {
-  if (typeof value !== 'string') {
-    throw new StoreError('Content must be a string.', 400, 'INVALID_CONTENT');
-  }
-  if (value.length > MAX_CONTENT_LENGTH) {
-    throw new StoreError(`Content must be ${MAX_CONTENT_LENGTH} characters or fewer.`, 413, 'CONTENT_TOO_LARGE');
-  }
-  // Postgres text cannot hold NUL bytes.
-  // eslint-disable-next-line no-control-regex
-  return value.replace(/\u0000/g, '');
 }
 
 function validatePinned(value) {
@@ -232,4 +258,4 @@ function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(object, key);
 }
 
-module.exports = { DocumentStore, StoreError, MAX_TITLE_LENGTH, MAX_CONTENT_LENGTH };
+module.exports = { DocumentStore };

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, getCurrentUser, register, signIn, signOut } from '@/lib/api';
-import type { User } from '@/lib/types';
+import type { User } from '@/lib/model';
 
 export const SESSION_KEY = ['session'] as const;
 const REMEMBERED_KEY = 'stillnote.user';

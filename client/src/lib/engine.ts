@@ -1,7 +1,23 @@
 import { ApiError, type NotesApi } from './api';
 import type { LocalStore } from './db';
-import { mergeNotes } from './merge';
-import type { Note, NoteChanges, SyncStatus } from './types';
+import {
+  CURRENT_SCHEMA_VERSION,
+  DEFAULT_NOTE_TITLE,
+  MAX_TITLE_LENGTH,
+  type Note,
+  type NoteChanges,
+  type RemoteNote,
+  type RemoteSummary,
+  type SyncStatus,
+} from './model';
+
+export interface EngineConflict {
+  noteId: string;
+  remoteVersion: number;
+  remoteUpdatedAt: string;
+  /** Full server copy when the conflict came from a save; null when only a summary is known. */
+  remote: Note | null;
+}
 
 export interface EngineState {
   /** False until there is something to show: local notes, or the first server answer. */
@@ -15,25 +31,113 @@ export interface EngineState {
   connected: boolean;
   /** ID of a note whose text could not be downloaded. */
   contentErrorId: string | null;
+  /** An active note changed elsewhere; autosave pauses until the user picks a version. */
+  conflict: EngineConflict | null;
 }
 
 export interface EngineOptions {
   api: NotesApi;
   store: LocalStore;
   notify?: (message: string) => void;
+  /** Quiet period after the last edit before an upload starts. */
   saveDelayMs?: number;
+  /** Longest a continuous burst of edits may postpone an upload. */
+  maxSaveDelayMs?: number;
+  /** Quiet period after the last edit before the local copy is written. */
   persistDelayMs?: number;
+  /** Longest a continuous burst of edits may postpone the local write. */
+  maxPersistDelayMs?: number;
   retryIntervalMs?: number;
 }
 
-const MAX_TITLE_LENGTH = 120;
+interface MergeConflict {
+  id: string;
+  remote: RemoteSummary;
+}
+
+interface MergeResult {
+  notes: Note[];
+  /** Local notes the server is missing or has an older copy of. */
+  needsSync: Note[];
+  /** Active notes whose server copy is newer; the editor keeps the local text until the user decides. */
+  conflicts: MergeConflict[];
+}
+
+const formatOf = (note: Pick<Note, 'contentFormat'> | RemoteSummary) => note.contentFormat ?? 'markdown';
+const schemaOf = (note: Pick<Note, 'contentSchemaVersion'> | RemoteSummary) => note.contentSchemaVersion ?? 1;
+
+/**
+ * Merges the server's note summaries into the local notes.
+ *
+ * Summaries carry no text, so a note whose content is `null` is "known but not
+ * downloaded". A local copy survives only if it is newer than the server's, or is the
+ * same version with its text already here. Otherwise the server's summary replaces it
+ * and the text is fetched again on demand. Newer local edits inherit the server's
+ * version so the conditional upload can succeed.
+ *
+ * A legacy local Markdown copy must never overwrite server HTML, because the
+ * conversion bumped the server version and preserved the original timestamp. If
+ * the active note is involved, its text stays on screen and the engine asks the
+ * user which version to keep instead of moving the cursor.
+ */
+export function mergeNotes(
+  local: Note[],
+  remote: RemoteSummary[],
+  tombstones: ReadonlySet<string>,
+  activeId: string | null = null,
+): MergeResult {
+  const remoteById = new Map(remote.filter((summary) => !tombstones.has(summary.id)).map((summary) => [summary.id, summary]));
+  const merged = new Map<string, Note>();
+  const needsSync: Note[] = [];
+  const conflicts: MergeConflict[] = [];
+
+  for (const summary of remoteById.values()) {
+    merged.set(summary.id, { ...summary, content: null });
+  }
+
+  for (const note of local) {
+    if (tombstones.has(note.id)) continue;
+    const summary = remoteById.get(note.id);
+
+    if (!summary) {
+      // A placeholder the server no longer has was deleted elsewhere; real text is uploaded.
+      if (note.content !== null) {
+        merged.set(note.id, note);
+        needsSync.push(note);
+      }
+      continue;
+    }
+
+    const localFormat = formatOf(note);
+    const remoteFormat = formatOf(summary);
+    const sameFormat = localFormat === remoteFormat && schemaOf(note) === schemaOf(summary);
+    const wouldReplaceConverted = localFormat === 'markdown' && remoteFormat === 'html' && note.content !== null;
+
+    if (time(note.updatedAt) > time(summary.updatedAt) && !wouldReplaceConverted) {
+      const next = { ...note, version: summary.version };
+      merged.set(note.id, next);
+      needsSync.push(next);
+    } else if (note.content !== null && note.version === summary.version && sameFormat) {
+      merged.set(note.id, note);
+    } else if (note.id === activeId && note.content !== null) {
+      // Keep the document the user is looking at, but stop autosave until they choose.
+      merged.set(note.id, note);
+      conflicts.push({ id: note.id, remote: summary });
+    }
+  }
+
+  const notes = [...merged.values()].sort((a, b) => time(b.updatedAt) - time(a.updatedAt));
+  return { notes, needsSync, conflicts };
+}
 
 export function makeNote(partial: Partial<Note> = {}): Note {
   const now = new Date().toISOString();
   return {
     id: crypto.randomUUID(),
-    title: 'Untitled note',
+    title: DEFAULT_NOTE_TITLE,
     content: '',
+    contentFormat: 'html',
+    contentSchemaVersion: CURRENT_SCHEMA_VERSION,
     pinned: false,
     createdAt: now,
     updatedAt: now,
@@ -56,6 +160,7 @@ export class SyncEngine {
     lastSavedAt: null,
     connected: false,
     contentErrorId: null,
+    conflict: null,
   };
 
   private readonly listeners = new Set<() => void>();
@@ -63,14 +168,22 @@ export class SyncEngine {
   private readonly store: LocalStore;
   private readonly notify: (message: string) => void;
   private readonly saveDelayMs: number;
+  private readonly maxSaveDelayMs: number;
   private readonly persistDelayMs: number;
+  private readonly maxPersistDelayMs: number;
   private readonly retryIntervalMs: number;
 
   private tombstones: Record<string, string> = {};
   private deletedThisSession = new Set<string>();
   private saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private maxSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private maxPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private chains = new Map<string, Promise<void>>();
+  /** What the server last confirmed for each note, so redundant timers can be skipped. */
+  private syncedFingerprints = new Map<string, string>();
+  /** Bumped on every local change, so a response cannot mark newer text as synced. */
+  private editRevisions = new Map<string, number>();
   private contentLoads = new Set<string>();
   private editCount = 0;
   private reconciling: Promise<void> | null = null;
@@ -81,8 +194,10 @@ export class SyncEngine {
     this.api = options.api;
     this.store = options.store;
     this.notify = options.notify ?? (() => undefined);
-    this.saveDelayMs = options.saveDelayMs ?? 650;
-    this.persistDelayMs = options.persistDelayMs ?? 300;
+    this.saveDelayMs = options.saveDelayMs ?? 1_000;
+    this.maxSaveDelayMs = options.maxSaveDelayMs ?? 5_000;
+    this.persistDelayMs = options.persistDelayMs ?? 250;
+    this.maxPersistDelayMs = options.maxPersistDelayMs ?? 1_000;
     this.retryIntervalMs = options.retryIntervalMs ?? 20_000;
   }
 
@@ -117,6 +232,9 @@ export class SyncEngine {
       window.addEventListener('online', this.handleOnline);
       window.addEventListener('pagehide', this.handlePageHide);
     }
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    }
     await this.reconcile();
     if (!this.started) return;
     this.retryTimer = setInterval(() => {
@@ -132,8 +250,12 @@ export class SyncEngine {
       window.removeEventListener('online', this.handleOnline);
       window.removeEventListener('pagehide', this.handlePageHide);
     }
-    this.saveTimers.forEach(clearTimeout);
-    this.saveTimers.clear();
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+    }
+    this.clearAllTimers(this.saveTimers);
+    this.clearAllTimers(this.maxSaveTimers);
+    // Keep persistence timers: flushPersistence writes their latest state before closing.
     void this.flushPersistence().finally(() => this.store.close());
   }
 
@@ -141,8 +263,17 @@ export class SyncEngine {
     void this.reconcile();
   };
   private handlePageHide = () => {
-    void this.flushPersistence();
+    this.flushOnLeave();
   };
+  private handleVisibilityChange = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') this.flushOnLeave();
+  };
+
+  /** Write the local copy first, then try to upload while the page still has time. */
+  private flushOnLeave() {
+    void this.flushPersistence();
+    if (this.saveTimers.size > 0 || this.maxSaveTimers.size > 0 || this.chains.size > 0) void this.flush();
+  }
 
   // ---- reading ------------------------------------------------------------
   get activeNote(): Note | null {
@@ -159,9 +290,12 @@ export class SyncEngine {
       ...note,
       ...changes,
       title: changes.title === undefined ? note.title : changes.title.slice(0, MAX_TITLE_LENGTH),
+      // The editor always writes HTML; this is what prevents an ambiguous reload.
+      ...('content' in changes ? { contentFormat: 'html' as const, contentSchemaVersion: CURRENT_SCHEMA_VERSION } : {}),
       updatedAt: new Date().toISOString(),
     };
     this.editCount += 1;
+    this.editRevisions.set(id, (this.editRevisions.get(id) ?? 0) + 1);
     this.commit(
       this.state.notes.map((item) => (item.id === id ? next : item)),
       { deferPersist: 'content' in changes },
@@ -170,16 +304,23 @@ export class SyncEngine {
   }
 
   create(): Note {
+    const previous = this.state.activeId;
     const note = makeNote();
+    this.editRevisions.set(note.id, 1);
     this.commit([note, ...this.state.notes], { activeId: note.id });
     this.scheduleSync(note.id);
+    if (previous && this.state.conflict?.noteId !== previous) void this.saveNow(previous);
+    void this.flushPersistence();
     return note;
   }
 
   /** Deletes a note and returns the ID that should be shown next. */
   async remove(id: string): Promise<string | null> {
     this.deletedThisSession.add(id);
-    this.clearTimer(this.saveTimers, id);
+    this.clearSaveTimers(id);
+    this.clearPersistTimers(id);
+    this.syncedFingerprints.delete(id);
+    this.editRevisions.delete(id);
     const tombstones = { ...this.tombstones, [id]: new Date().toISOString() };
     let notes = this.state.notes.filter((note) => note.id !== id);
     let activeId = this.state.activeId === id ? null : this.state.activeId;
@@ -192,6 +333,7 @@ export class SyncEngine {
       activeId = notes[0].id;
     }
     this.commit(notes, { activeId, tombstones });
+    if (this.state.conflict?.noteId === id) this.setState({ conflict: null });
     if (replacement) this.scheduleSync(replacement.id);
 
     try {
@@ -207,7 +349,13 @@ export class SyncEngine {
 
   select(id: string) {
     if (!this.state.notes.some((note) => note.id === id)) return;
-    if (this.state.activeId !== id) this.commit(this.state.notes, { activeId: id });
+    if (this.state.activeId !== id) {
+      const previous = this.state.activeId;
+      this.commit(this.state.notes, { activeId: id });
+      // Switching away is an explicit end to the edit burst: persist and upload now.
+      if (previous && this.state.conflict?.noteId !== previous) void this.saveNow(previous);
+      void this.flushPersistence();
+    }
     void this.loadContent(id);
   }
 
@@ -220,7 +368,7 @@ export class SyncEngine {
       const full = await this.api.get(id);
       const current = this.state.notes.find((note) => note.id === id);
       if (current && current.content === null) {
-        this.commit(this.state.notes.map((note) => (note.id === id ? { ...full } : note)));
+        this.commit(this.state.notes.map((note) => (note.id === id ? toLocalNote(full) : note)));
       }
       this.setState({ connected: true });
     } catch (error) {
@@ -239,19 +387,62 @@ export class SyncEngine {
     }
   }
 
-  /** Uploads everything pending right now (Ctrl+S, tests). */
+  /** Persists and uploads everything pending right now (Ctrl+S, leaving the page, tests). */
   async flush() {
-    const ids = [...this.saveTimers.keys()];
-    ids.forEach((id) => this.clearTimer(this.saveTimers, id));
-    await Promise.all(ids.map((id) => this.runSync(id)));
+    // Start the local write immediately; do not make the network wait for it.
+    const persisted = this.flushPersistence();
+    const ids = new Set([...this.saveTimers.keys(), ...this.maxSaveTimers.keys(), ...this.chains.keys()]);
+    ids.forEach((id) => this.clearSaveTimers(id));
+    const uploaded = Promise.all([...ids].map((id) => this.runSync(id)));
+    await persisted;
+    await uploaded;
     await this.flushPersistence();
   }
 
   /** Saves the open note's changes to the server immediately. */
   saveNow(id: string) {
-    this.clearTimer(this.saveTimers, id);
+    if (this.state.conflict?.noteId === id) {
+      this.notify('Choose which version to keep first');
+      return Promise.resolve();
+    }
+    this.clearSaveTimers(id);
     this.setState({ status: 'saving' });
     return this.runSync(id);
+  }
+
+  /** Applies the server copy after the user chose "Reload latest". */
+  async reloadConflict(id: string): Promise<void> {
+    const conflict = this.state.conflict;
+    if (!conflict || conflict.noteId !== id) return;
+    try {
+      const remote = conflict.remote ?? toLocalNote(await this.api.get(id));
+      if (!this.state.notes.some((note) => note.id === id)) return;
+      this.commit(this.state.notes.map((note) => (note.id === id ? remote : note)));
+      this.syncedFingerprints.delete(id);
+      this.setState({ conflict: null, status: 'saved', connected: true, lastSavedAt: new Date().toISOString() });
+      this.notify('Loaded the latest version');
+    } catch (error) {
+      if (error instanceof ApiError && error.isNetwork) this.setState({ connected: false, status: 'offline' });
+      else this.setState({ status: 'error' });
+      this.notify('The latest version could not be downloaded. Try again when you are online.');
+    }
+  }
+
+  /** Keeps the text on screen and uploads it over the server copy. */
+  async keepLocalConflict(id: string): Promise<void> {
+    const conflict = this.state.conflict;
+    if (!conflict || conflict.noteId !== id) return;
+    const note = this.state.notes.find((item) => item.id === id);
+    if (!note) {
+      this.setState({ conflict: null });
+      return;
+    }
+    const kept: Note = { ...note, version: conflict.remoteVersion };
+    this.commit(this.state.notes.map((item) => (item.id === id ? kept : item)));
+    this.syncedFingerprints.delete(id);
+    this.editRevisions.set(id, (this.editRevisions.get(id) ?? 0) + 1);
+    this.setState({ conflict: null, status: 'saving' });
+    await this.runSync(id, true);
   }
 
   // ---- reconcile with the server -------------------------------------------
@@ -287,7 +478,7 @@ export class SyncEngine {
       }
     }
 
-    const { notes: merged, needsSync } = mergeNotes(this.state.notes, remote, tombstoneIds);
+    const { notes: merged, needsSync, conflicts } = mergeNotes(this.state.notes, remote, tombstoneIds, this.state.activeId);
     let notes = merged;
     if (notes.length === 0) {
       const blank = makeNote();
@@ -295,11 +486,25 @@ export class SyncEngine {
       needsSync.push(blank);
     }
     const activeId = notes.some((note) => note.id === this.state.activeId) ? this.state.activeId : notes[0].id;
+    let conflict = this.state.conflict;
+    const first = conflicts[0];
+    if (first) {
+      conflict = {
+        noteId: first.id,
+        remoteVersion: first.remote.version,
+        remoteUpdatedAt: first.remote.updatedAt,
+        remote: null,
+      };
+    } else if (conflict) {
+      const conflictedId = conflict.noteId;
+      if (!notes.some((note) => note.id === conflictedId)) conflict = null;
+    }
     this.commit(notes, { activeId, tombstones });
-    this.setState({ ready: true, reconciled: true });
+    this.setState({ ready: true, reconciled: true, conflict });
 
     const editsAtStart = this.editCount;
-    const results = await Promise.allSettled(needsSync.map((note) => this.synchronize(note.id)));
+    // Reconcile may have to recreate a note the server lost, so these pushes are forced.
+    const results = await Promise.allSettled(needsSync.map((note) => this.synchronize(note.id, true)));
     if (results.some((result) => result.status === 'rejected')) failed = true;
 
     this.setState({ connected: !failed });
@@ -309,21 +514,40 @@ export class SyncEngine {
 
   // ---- uploading ----------------------------------------------------------
   private scheduleSync(id: string) {
+    if (this.state.conflict?.noteId === id) {
+      this.setState({ status: 'error' });
+      return;
+    }
     this.clearTimer(this.saveTimers, id);
     this.setState({ status: 'saving' });
     this.saveTimers.set(
       id,
       setTimeout(() => {
         this.saveTimers.delete(id);
+        this.clearTimer(this.maxSaveTimers, id);
         void this.runSync(id);
       }, this.saveDelayMs),
     );
+    // Continuous typing resets the quiet-period timer above; this one guarantees
+    // that a long edit burst still reaches the server every few seconds.
+    if (!this.maxSaveTimers.has(id)) {
+      this.maxSaveTimers.set(
+        id,
+        setTimeout(() => {
+          this.maxSaveTimers.delete(id);
+          this.clearTimer(this.saveTimers, id);
+          void this.runSync(id);
+        }, this.maxSaveDelayMs),
+      );
+    }
   }
 
-  private async runSync(id: string) {
+  private async runSync(id: string, force = false) {
     try {
-      await this.synchronize(id);
-      if (this.saveTimers.size === 0 && this.chains.size === 0) {
+      await this.synchronize(id, force);
+      if (this.state.conflict?.noteId === id) {
+        this.setState({ status: 'error', connected: true });
+      } else if (this.saveTimers.size === 0 && this.maxSaveTimers.size === 0 && this.chains.size === 0) {
         this.setState({ status: 'saved', connected: true, lastSavedAt: new Date().toISOString() });
       }
     } catch (error) {
@@ -332,9 +556,9 @@ export class SyncEngine {
   }
 
   // Uploads for one note run strictly in turn, so each sees the version the previous returned.
-  private synchronize(id: string): Promise<void> {
+  private synchronize(id: string, force = false): Promise<void> {
     const previous = this.chains.get(id) ?? Promise.resolve();
-    const run = previous.catch(() => undefined).then(() => this.push(id));
+    const run = previous.catch(() => undefined).then(() => this.push(id, force));
     this.chains.set(id, run);
     const release = () => {
       if (this.chains.get(id) === run) this.chains.delete(id);
@@ -343,22 +567,49 @@ export class SyncEngine {
     return run;
   }
 
-  private async push(id: string) {
+  private async push(id: string, force = false) {
     // Always send the newest local state, so queued saves collapse into one request.
     const note = this.state.notes.find((item) => item.id === id);
     if (!note) return;
+    // A duplicate timer (or an explicit save with no new edits) must not create
+    // another server version. A forced reconcile still runs.
+    if (!force && this.syncedFingerprints.get(id) === fingerprint(note)) return;
+    if (this.state.conflict?.noteId === id) {
+      this.clearSaveTimers(id);
+      return;
+    }
+    const revision = this.editRevisions.get(id) ?? 0;
+    const contentFormat = note.contentFormat ?? 'markdown';
+    const sentContent = note.content;
+    const contentFields =
+      note.content !== null
+        ? {
+            content: note.content,
+            contentFormat,
+            ...(contentFormat === 'html' ? { contentSchemaVersion: note.contentSchemaVersion ?? CURRENT_SCHEMA_VERSION } : {}),
+          }
+        : {};
     const body: Record<string, unknown> = {
       title: note.title,
       pinned: note.pinned,
       updatedAt: note.updatedAt,
-      ...(note.content !== null ? { content: note.content } : {}),
+      ...contentFields,
       ...(Number.isInteger(note.version) ? { version: note.version } : {}),
+    };
+    const createBody: Record<string, unknown> = {
+      id: note.id,
+      title: note.title,
+      pinned: note.pinned,
+      createdAt: note.createdAt,
+      updatedAt: note.updatedAt,
+      ...contentFields,
     };
 
     // A note the server has never seen is created directly, saving a request that would 404.
     if (note.version === undefined && note.content !== null) {
       try {
-        this.recordVersion(id, (await this.api.create(note as unknown as Record<string, unknown>)).version);
+        this.recordServer(id, await this.api.create(createBody), sentContent, contentFormat);
+        this.markSynced(id, revision);
         return;
       } catch (error) {
         if (!(error instanceof ApiError && error.status === 409 && error.code === 'DOCUMENT_EXISTS')) throw error;
@@ -367,22 +618,43 @@ export class SyncEngine {
     }
 
     try {
-      this.recordVersion(id, (await this.api.update(id, body)).version);
+      this.recordServer(id, await this.api.update(id, body), sentContent, contentFormat);
+      this.markSynced(id, revision);
     } catch (error) {
       if (!(error instanceof ApiError)) throw error;
       if (error.status === 404) {
         // A pending save must never recreate a note the user has deleted.
         if (this.deletedThisSession.has(id) || id in this.tombstones) return;
         if (note.content === null) return;
-        this.recordVersion(id, (await this.api.create(note as unknown as Record<string, unknown>)).version);
+        this.recordServer(id, await this.api.create(createBody), sentContent, contentFormat);
+        this.markSynced(id, revision);
       } else if (error.status === 409 && error.code === 'VERSION_CONFLICT' && error.details?.current) {
-        const remote = error.details.current;
-        // Another session saved first. The newer edit wins by timestamp, but never silently.
-        if ((Date.parse(note.updatedAt) || 0) > (Date.parse(remote.updatedAt) || 0)) {
-          this.recordVersion(id, (await this.api.update(id, { ...body, version: remote.version })).version);
+        const remote = toLocalNote(error.details.current);
+        // The open note is never replaced under the caret. Keep the local text
+        // and ask which version to keep; autosave stays paused meanwhile.
+        if (id === this.state.activeId) {
+          this.clearSaveTimers(id);
+          this.setState({
+            conflict: {
+              noteId: id,
+              remoteVersion: remote.version,
+              remoteUpdatedAt: remote.updatedAt,
+              remote,
+            },
+          });
+          this.notify('This note was updated in another session');
         } else {
-          this.commit(this.state.notes.map((item) => (item.id === id ? { ...remote } : item)));
-          this.notify('This note was updated from another session');
+          // Stale Markdown must never replace converted HTML, even if its timestamp is newer.
+          const safeToOverwrite = !(contentFormat === 'markdown' && (remote.contentFormat ?? 'html') === 'html');
+          // A background note's newer edit wins by timestamp, but never silently.
+          if (safeToOverwrite && time(note.updatedAt) > time(remote.updatedAt)) {
+            this.recordServer(id, await this.api.update(id, { ...body, version: remote.version }), sentContent, contentFormat);
+            this.markSynced(id, revision);
+          } else {
+            this.commit(this.state.notes.map((item) => (item.id === id ? { ...remote } : item)));
+            this.syncedFingerprints.delete(id);
+            this.notify('This note was updated from another session');
+          }
         }
       } else {
         throw error;
@@ -390,13 +662,32 @@ export class SyncEngine {
     }
   }
 
-  // Records the server's version without touching text or timestamp, so it cannot
-  // overwrite anything typed while the request was in flight.
-  private recordVersion(id: string, version: number | undefined) {
-    if (!Number.isInteger(version)) return;
+  // Records the server's sanitized copy, but only when the text has not changed
+  // while the request was in flight. This keeps local HTML canonical without
+  // ever overwriting something the user typed during the request.
+  private recordServer(id: string, document: RemoteNote, sentContent: string | null, sentFormat: 'html' | 'markdown') {
     const note = this.state.notes.find((item) => item.id === id);
-    if (!note || note.version === version) return;
-    this.commit(this.state.notes.map((item) => (item.id === id ? { ...item, version } : item)));
+    if (!note) return;
+    const patch: Partial<Note> = { version: document.version };
+    if (sentContent !== null && note.content === sentContent) {
+      const responseFormat = document.contentFormat ?? sentFormat;
+      patch.content = document.content;
+      patch.contentFormat = responseFormat;
+      if (responseFormat === 'html') {
+        patch.contentSchemaVersion = document.contentSchemaVersion ?? CURRENT_SCHEMA_VERSION;
+      }
+    }
+    this.commit(this.state.notes.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  }
+
+  /** Marks the server copy as current unless a newer local edit arrived meanwhile. */
+  private markSynced(id: string, revision: number) {
+    const note = this.state.notes.find((item) => item.id === id);
+    if (!note) {
+      this.syncedFingerprints.delete(id);
+      return;
+    }
+    if ((this.editRevisions.get(id) ?? 0) === revision) this.syncedFingerprints.set(id, fingerprint(note));
   }
 
   // ---- state + persistence ------------------------------------------------
@@ -419,7 +710,9 @@ export class SyncEngine {
     }
     for (const id of previous.keys()) {
       if (!nextIds.has(id)) {
-        this.clearTimer(this.persistTimers, id);
+        this.clearPersistTimers(id);
+        this.syncedFingerprints.delete(id);
+        this.editRevisions.delete(id);
         void this.store.deleteNote(id).catch(warn);
       }
     }
@@ -427,21 +720,37 @@ export class SyncEngine {
   }
 
   private persistNow(note: Note) {
-    this.clearTimer(this.persistTimers, note.id);
+    this.clearPersistTimers(note.id);
     void this.store.putNote(note).catch(warn);
   }
 
-  // Typing rewrites the whole note on every keystroke; batch those writes.
+  // Typing rewrites the whole note on every keystroke; batch those writes. A
+  // maximum wait still writes a long edit burst to IndexedDB every second.
   private persistLater(id: string) {
     this.clearTimer(this.persistTimers, id);
     this.persistTimers.set(
       id,
       setTimeout(() => {
         this.persistTimers.delete(id);
-        const note = this.state.notes.find((item) => item.id === id);
-        if (note) void this.store.putNote(note).catch(warn);
+        this.clearTimer(this.maxPersistTimers, id);
+        this.persistNote(id);
       }, this.persistDelayMs),
     );
+    if (!this.maxPersistTimers.has(id)) {
+      this.maxPersistTimers.set(
+        id,
+        setTimeout(() => {
+          this.maxPersistTimers.delete(id);
+          this.clearTimer(this.persistTimers, id);
+          this.persistNote(id);
+        }, this.maxPersistDelayMs),
+      );
+    }
+  }
+
+  private persistNote(id: string) {
+    const note = this.state.notes.find((item) => item.id === id);
+    if (note) void this.store.putNote(note).catch(warn);
   }
 
   private persistMeta() {
@@ -449,10 +758,10 @@ export class SyncEngine {
   }
 
   private async flushPersistence() {
-    const ids = [...this.persistTimers.keys()];
-    ids.forEach((id) => this.clearTimer(this.persistTimers, id));
+    const ids = new Set([...this.persistTimers.keys(), ...this.maxPersistTimers.keys()]);
+    ids.forEach((id) => this.clearPersistTimers(id));
     await Promise.all(
-      ids.map((id) => {
+      [...ids].map((id) => {
         const note = this.state.notes.find((item) => item.id === id);
         return note ? this.store.putNote(note).catch(warn) : undefined;
       }),
@@ -465,15 +774,56 @@ export class SyncEngine {
     this.persistMeta();
   }
 
+  private clearSaveTimers(id: string) {
+    this.clearTimer(this.saveTimers, id);
+    this.clearTimer(this.maxSaveTimers, id);
+  }
+
+  private clearPersistTimers(id: string) {
+    this.clearTimer(this.persistTimers, id);
+    this.clearTimer(this.maxPersistTimers, id);
+  }
+
   private clearTimer(timers: Map<string, ReturnType<typeof setTimeout>>, id: string) {
     const timer = timers.get(id);
     if (timer) clearTimeout(timer);
     timers.delete(id);
   }
+
+  private clearAllTimers(timers: Map<string, ReturnType<typeof setTimeout>>) {
+    timers.forEach(clearTimeout);
+    timers.clear();
+  }
+}
+
+/** Identifies the exact note state the server last confirmed. */
+function fingerprint(note: Note): string {
+  return JSON.stringify([
+    note.title,
+    note.content,
+    note.contentFormat ?? 'markdown',
+    note.contentSchemaVersion ?? 1,
+    note.pinned,
+    note.version ?? null,
+    note.updatedAt,
+  ]);
 }
 
 function sortNotes(notes: Note[]): Note[] {
-  return [...notes].sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0));
+  return [...notes].sort((a, b) => time(b.updatedAt) - time(a.updatedAt));
+}
+
+function time(value: string | undefined): number {
+  return Date.parse(value ?? '') || 0;
+}
+
+/** Converts an API response to the local note shape with an explicit format. */
+function toLocalNote(remote: RemoteNote): Note & { version: number } {
+  return {
+    ...remote,
+    contentFormat: remote.contentFormat ?? 'html',
+    contentSchemaVersion: remote.contentSchemaVersion ?? CURRENT_SCHEMA_VERSION,
+  };
 }
 
 function warn(error: unknown) {

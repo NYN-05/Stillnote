@@ -62,13 +62,3 @@ export function formatNoteDate(value: string): string {
   const sameYear = date.getFullYear() === now.getFullYear();
   return date.toLocaleDateString([], sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
 }
-
-export function previewText(content: string | null | undefined, snippet?: string, words = 14): string {
-  return (content ?? snippet ?? '')
-    .replace(/[#>*_`~[\]-]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, words)
-    .join(' ');
-}

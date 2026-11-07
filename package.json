@@ -2,7 +2,7 @@
   "name": "stillnote-monorepo",
   "version": "1.0.0",
   "private": true,
-  "description": "A minimalist, distraction-free Markdown text editor with local and server persistence.",
+  "description": "A calm, offline-first rich-text note editor with local and server persistence.",
   "workspaces": [
     "client",
     "server"
@@ -17,6 +17,7 @@
     "db:up": "docker compose up -d --wait postgres redis",
     "db:down": "docker compose down",
     "db:migrate": "npm run migrate --workspace @stillnote/server",
+    "db:convert-content": "npm run convert-content --workspace @stillnote/server --",
     "db:import": "npm run import:json --workspace @stillnote/server",
     "start:cluster": "npm run start:cluster --workspace @stillnote/server",
     "db:claim": "npm run claim:legacy --workspace @stillnote/server --",

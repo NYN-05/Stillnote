@@ -1,4 +1,4 @@
-import type { RemoteNote, RemoteSummary, User } from './types';
+import type { RemoteNote, RemoteSummary, User } from './model';
 
 const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
 const PAGE_SIZE = 200;
