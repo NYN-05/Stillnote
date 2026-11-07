@@ -66,7 +66,7 @@ async function buildApp({ config, store, auth, redis = null, logger, metrics = n
   await app.register(require('@fastify/cors'), {
     origin(origin, callback) {
       // Requests from CLI tools and same-origin server calls have no Origin header.
-      if (!origin || config.allowedOrigins.includes(origin)) return callback(null, true);
+      if (!origin || config.allowAllOrigins || config.allowedOrigins.includes(origin)) return callback(null, true);
       return callback(new StoreError('This origin is not allowed by CORS.', 403, 'CORS_ORIGIN_DENIED'), false);
     },
     credentials: true,
@@ -99,7 +99,7 @@ async function buildApp({ config, store, auth, redis = null, logger, metrics = n
     reply.header('x-request-id', request.id);
     // Cookie auth must not be usable by a form or script on another site.
     const origin = request.headers.origin;
-    if (!SAFE_METHODS.has(request.method) && origin && !config.allowedOrigins.includes(origin)) {
+    if (!SAFE_METHODS.has(request.method) && origin && !config.allowAllOrigins && !config.allowedOrigins.includes(origin)) {
       throw new StoreError('This origin is not allowed.', 403, 'CORS_ORIGIN_DENIED');
     }
     const token = request.cookies?.[SESSION_COOKIE];

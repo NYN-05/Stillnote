@@ -14,15 +14,17 @@ function bool(name, fallback) {
 // Read lazily so tests and scripts can set the environment before calling.
 function loadConfig() {
   const production = process.env.NODE_ENV === 'production';
+  const configuredOrigins = process.env.CLIENT_ORIGINS || DEFAULT_ORIGINS;
   return {
     production,
     port: int('PORT', 4000),
     host: process.env.HOST || '0.0.0.0',
     logLevel: process.env.LOG_LEVEL || (production ? 'info' : 'debug'),
-    allowedOrigins: (process.env.CLIENT_ORIGINS || DEFAULT_ORIGINS)
+    allowAllOrigins: configuredOrigins.trim() === '*',
+    allowedOrigins: configuredOrigins
       .split(',')
       .map((origin) => origin.trim())
-      .filter(Boolean),
+      .filter((origin) => origin && origin !== '*'),
     // Set when behind nginx or a load balancer so request IPs (rate limiting, logs) are real.
     trustProxy: bool('TRUST_PROXY', false),
     redisUrl: process.env.REDIS_URL || '',
