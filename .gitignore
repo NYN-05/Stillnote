@@ -26,7 +26,6 @@
 # Hundreds of megabytes that `npm ci` recreates exactly. Committing them would
 # bloat the repository and include platform-specific binaries (argon2, esbuild).
 node_modules/
-scripts/
 
 
 # -----------------------------------------------------------------------------
@@ -91,7 +90,12 @@ Desktop.ini
 # -----------------------------------------------------------------------------
 # Per-developer permissions and caches, not project configuration.
 .claude/settings.local.json
+.kilo/
+.opencode/
 graphify-out/
+
+# Generated repository inventory, useful locally but not source.
+directory_structure.txt
 
 
 # =============================================================================
