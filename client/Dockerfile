@@ -10,7 +10,7 @@ COPY shared ./shared
 # Leave VITE_API_URL unset: the browser calls /api on the same origin and nginx proxies it.
 RUN npm run build --workspace @stillnote/client
 
-FROM nginx:1.27-alpine
+FROM nginx:1.29-alpine
 # *.template files are rendered with environment variables at container start.
 COPY client/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY client/nginx/security-headers.conf /etc/nginx/snippets/security-headers.conf
